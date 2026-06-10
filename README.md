@@ -1,300 +1,161 @@
-# Server Management MCP
+# 🚀 ssh-alias-mcp — Let Your AI Agent Manage Linux Servers
 
-Remote Linux server management via SSH — designed as an **MCP server for AI agents** (Claude Code, Codex CLI, OpenCode, Cursor, Windsurf, and any MCP-compatible client), with a **CLI for manual human use**. All modes share the same connection pool and proxy logic.
+**GitHub: https://github.com/leehom0123/ssh-alias-mcp**
 
-## Quick Start
+[中文](README.zh-CN.md)
 
-### For AI Agents (MCP Mode)
+📖 **[Full Technical Docs (DOCS.md)](DOCS.md)** — architecture, all config fields, MCP tools reference, script examples
 
-Register as an MCP server. The exact command varies by client:
 
-```bash
-# Claude Code
-claude mcp add server-management python <path-to-this-dir>/mcp_server.py
+## Agent Setup in One Sentence
 
-# Codex CLI / OpenCode — add to your mcp.json or settings
-# {
-#   "mcpServers": {
-#     "server-management": {
-#       "command": "python",
-#       "args": ["<path-to-this-dir>/mcp_server.py"]
-#     }
-#   }
-# }
-```
+Read https://github.com/leehom0123/ssh-alias-mcp/blob/main/AI_INSTALL.md — set up the SKILL and install the MCP service as described.
 
-Once registered, the agent can:
-- Execute commands on any configured server (`ssh_run`, `ssh_run_sudo`)
-- Upload and run scripts (`ssh_upload_script`, `ssh_run_script`)
-- Invoke pre-defined aliases with a single tool call (`ssh_alias:{server}:{name}`)
-- List servers and aliases for context discovery
+## What Is This?
 
-### For Humans (CLI Mode)
+A ~2,000-line Python tool that lets AI agents (Claude Code, Codex CLI, Cursor, Windsurf) **SSH into your Linux servers, run commands, deploy code, tail logs, restart services**. It also doubles as a nice CLI for day-to-day manual use.
 
-```bash
-cd <path-to-this-dir>
-python cli.py list-servers
-python cli.py my-server run "uptime"
-python cli.py my-server alias healthcheck
-python cli.py my-server upload /path/to/script.sh -r   # upload & run
-```
+**One set of YAML config, one connection pool, works for both AI and humans.**
 
-## Directory Structure
 
-```
-├── <skills-dir>/
-│   └── ssh-manager/           # Skill + core code
-│       ├── SKILL.md           # AI agent skill definition
-│       ├── cli.py             # CLI entry point
-│       ├── mcp_server.py      # MCP stdio server
-│       ├── ssh_client.py      # Core module (SSH connection, proxy, pool)
-│       ├── config.yaml        # Global config (servers_dir, proxy, timeout)
-│       ├── README.md          # English readme (this file)
-│       └── README.zh-CN.md    # Chinese readme
-│
-└── servers/                   # Server configs (placed outside skills, configured in config.yaml)
-    ├── my-server.yml          # Connection info + alias definitions
-    ├── _shared/common.yml     # Shared aliases (inherited via `extends`)
-    └── my-server/             # Local shell scripts (.sh) for this server
-```
+## Why I Built This
 
-> **Note**: The `servers/` directory lives outside `ssh-manager/` for easier management and to keep credentials separate from the skill. Its path is configured in `config.yaml` via `servers_dir` (absolute or relative path).
+I run a handful of VPS instances for different projects. Daily ops are predictable: check if logs have errors, deploy new code, restart a container, see if disk is full again.
 
-## Architecture
+Every time: open terminal → SSH in → type commands → exit. Not painful, but definitely not fun.
 
-```
-┌──────────────────────────────────────────────────────┐
-│  AI Agent (Claude Code / Codex / OpenCode / ...)    │
-│  └── MCP tool calls (ssh_run, ssh_alias:...)        │
-└──────────────┬───────────────────────────────────────┘
-               │ JSON-RPC over stdio
-┌──────────────▼───────────────────────────────────────┐
-│  mcp_server.py  (MCP stdio server)                  │
-│  └── dynamically exposes aliases as MCP tools       │
-└──────────────┬───────────────────────────────────────┘
-               │
-┌──────────────▼───────────────────────────────────────┐
-│  ssh_client.py  (shared core)                        │
-│  ├── ConnectionPool (auto-reuse, 60s keepalive)      │
-│  ├── SOCKS5 proxy with auto-fallback                 │
-│  └── SFTP script upload & execution                  │
-└──────────────┬───────────────────────────────────────┘
-               │ SSH
-┌──────────────▼───────────────────────────────────────┐
-│  Remote Linux Servers                                │
-└──────────────────────────────────────────────────────┘
-```
+When Claude Code added MCP (Model Context Protocol) support, letting AI call external tools, I thought: *what if I just define my routine server tasks as skills and let AI handle them?*
 
-## Configuration
+So I spent a day building this with paramiko. It worked way better than expected. Now I tell my AI agent "restart all three web servers," and it just does it.
 
-### Global Config (`config.yaml`)
+Open-sourcing in case anyone else managing a few servers finds it useful.
 
-```yaml
-# Path to servers/ directory (absolute or relative to this file)
-servers_dir: "../servers"
 
-proxy:
-  enabled: false              # Enable SOCKS5 proxy globally
-  host: "127.0.0.1"           # Proxy address
-  port: 1080                  # Proxy port
+## Get Started
 
-server:
-  timeout: 30                 # Default SSH connection timeout (seconds)
-```
-
-Proxy is tried first with automatic fallback to direct connection.
-
-### YAML Inheritance (`extends`)
-
-Share aliases across multiple servers without duplication:
-
-```yaml
-# _shared/common.yml
-aliases:
-  - name: healthcheck
-    inline: "df -h / && free -h"
-    desc: "Health check"
-  - name: disk-usage
-    inline: "df -h"
-    desc: "Disk usage"
-```
-
-```yaml
-# my-server.yml
-extends:
-  - _shared/common.yml    # Inherit shared aliases
-
-server:
-  host: "..."
-  ...
-
-aliases:
-  - name: deploy-backend
-    script: deploy-backend.sh
-    desc: "Deploy backend"
-```
-
-- `extends` points to other `.yml` files in the same `servers_dir`
-- `aliases` from extended files are merged into the server's `aliases`
-- Local aliases take priority (overwrite inherited aliases with the same name)
-- Supports multiple inheritance targets
-
-### Server YAML Configuration (`{servers_dir}/{name}.yml`)
-
-Create a `.yml` file in the `servers/` directory for each server:
-
-```yaml
-# my-server.yml
-
-server:
-  # === Required fields ===
-  host: "your.host.com"         # Server IP or domain name
-  user: "username"               # SSH login username
-
-  # === Display info ===
-  name: "My Server"             # Display name
-  desc: "Application server"    # Description
-
-  # Authentication: choose one of the following
-  password: "your-password"      # Password authentication
-  # key: "/path/to/private_key"     # OR key-based authentication
-  # key_password: "passphrase"      # Passphrase for the private key (optional)
-  sudo_password: "sudo-pass"     # Sudo password for root commands (optional, fallback to password)
-
-  # === Optional fields ===
-  port: 22                       # SSH port (default: 22)
-  timeout: 30                    # SSH connection timeout (seconds, default: 30)
-  scripts_dir: "/home/user/scripts"  # Remote directory for uploaded scripts
-  system: "Ubuntu 24.04 LTS"    # OS info (for documentation & command selection)
-
-  # Per-server proxy override (optional, overrides global config.yaml)
-  proxy:
-    host: "127.0.0.1"            # Proxy host
-    port: 10808                  # Proxy port
-    type: socks5                 # Proxy type (currently only socks5)
-
-# Quick command aliases — auto-exposed as MCP tools
-aliases:
-  # script type: uploads .sh file first, then executes
-  - name: deploy
-    script: app-deploy.sh        # Script path (relative to CWD)
-    desc: "Deploy app"           # Description (for display)
-    timeout: 600                 # Command timeout in seconds (default: 300)
-
-  # inline type: execute command directly on remote server
-  - name: logs
-    inline: "docker logs --tail 100 my-app"
-    desc: "View logs"
-    timeout: 10
-
-  # script type with sudo
-  - name: restart-service
-    script: restart-service.sh
-    desc: "Restart service"
-    sudo: true                   # Run with sudo (uses server.sudo_password, fallback to password)
-```
-
-## Usage Modes
-
-### Mode 1: AI Agent via MCP (Primary)
-
-Register once, then the agent auto-discovers all servers and aliases as tools.
-
-Servers are discovered by globbing `{servers_dir}/*.yml` — the agent sees each server's host, user, OS, aliases, etc. directly from the parsed YAML config.
-
-**Available MCP tools:**
+📥 **Installation: read [AI_INSTALL.md](AI_INSTALL.md) — set up MCP and add `SKILL.md` as described.** (You can also just paste the GitHub URL to your AI agent and let it install itself.)
 
 | Tool | Description |
 |------|-------------|
 | `ssh_list_servers` | List all configured servers |
 | `ssh_run` | Execute a command on a remote server |
-| `ssh_run_sudo` | Execute a command as root (requires `sudo_password` in server config) |
-| `ssh_upload_script` | Upload a local script, optionally run immediately |
-| `ssh_run_script` | Run an already-uploaded script |
-| `ssh_list_scripts` | List scripts on the remote server |
-| `ssh_upload_all_scripts` | Upload all scripts from alias definitions |
+| `ssh_run_sudo` | Execute as root (requires `sudo_password`) |
+| `ssh_upload_script` | Upload a script, optionally run immediately |
+| `ssh_run_script` | Run an uploaded script |
 | `ssh_run_alias` | Run an alias-defined command |
-| `ssh_list_aliases` | List aliases for a server |
-| `ssh_alias:{server}:{name}` | **Dynamic one-click alias** (auto-generated per alias) |
+| `ssh_alias:{server}:{name}` | **One-click alias, one MCP tool per alias** |
 
-**Key design for AI agents:**
-- Aliases are dynamically exposed as individual MCP tools (e.g. `ssh_alias:my-server:deploy`)
-- No hardcoded paths — all paths resolve relative to `__file__`
+> ⚠️ **Don't inline `sudo -S`** — use `ssh_run_sudo`. For docker permission issues, set `sudo: true` in the alias.
 
-### Mode 2: CLI (Manual Human Use)
+### ⌨️ CLI Mode
 
 ```bash
-cd <path-to-this-dir>
-
-# List all servers
-python cli.py list-servers
-
-# Run a command
-python cli.py <server> run "<command>"
-
-# Run as root (requires sudo_password in server config)
-python cli.py <server> sudo "<command>"
-
-# Run an alias
-python cli.py <server> alias <name>
-
-# Upload and run a script immediately
-python cli.py <server> upload /path/to/script.sh -r/--run
-
-# Upload all local scripts
-python cli.py <server> upload-all
-
-# List scripts / aliases
-python cli.py <server> list-scripts
-python cli.py <server> list-aliases
+python cli.py list-servers                 # See all servers
+python cli.py my-server run "uptime"       # Run a command
+python cli.py my-server sudo "apt update"  # Run as root
+python cli.py my-server alias healthcheck  # Run an alias
+python cli.py my-server upload script.sh -r   # Upload & run immediately
 ```
 
-All commands support `-t` / `--timeout` (seconds, default 300).
 
-### Mode 3: Python Module
+## 🎯 Key Highlights
 
-```python
-import sys
-sys.path.insert(0, "<path-to-this-dir>")
-from ssh_client import pool
+### 1. YAML Config Reuse + `extends` Inheritance
 
-conn = pool.get("my-server")
-result = conn.run("ls -la /opt")
-print(result["stdout"])
+One server = one YAML file. Structure it like this:
+
+```
+servers/
+├── _shared/common.yml        # Shared aliases, inherited by all servers
+├── prod-web-01.yml           # Production server
+├── prod-web-02.yml           # Another production server
+└── staging.yml               # Staging
 ```
 
-## Script Examples
+Define common checks and commands once in `_shared/common.yml` — every server `extends` it:
 
-### Deploy Script
+```yaml
+# _shared/common.yml
+aliases:
+  - name: healthcheck
+    inline: "df -h / && free -h && uptime"
+    desc: "One-click health check"
+  - name: docker-ps
+    inline: "docker ps --format 'table {{.Names}}\t{{.Status}}'"
+    desc: "Running containers"
+  - name: logs-nginx
+    inline: "tail -50 /var/log/nginx/error.log"
+    desc: "Nginx error logs"
+```
+
+```yaml
+# prod-web-01.yml
+extends:
+  - _shared/common.yml         # Inherit shared aliases
+
+server:
+  host: "198.51.100.10"
+  user: "deploy"
+  password: "xxx"
+  sudo_password: "xxx"
+  system: "Ubuntu 22.04 LTS"
+
+aliases:
+  - name: deploy
+    script: deploy.sh
+    desc: "Deploy main site"
+    timeout: 600
+    sudo: true
+
+  - name: restart
+    inline: "systemctl restart my-app && echo 'restarted'"
+    desc: "Restart app"
+    sudo: true
+```
+
+5, 10, or 20 servers — same effortless maintenance. **Same aliases work for AI and CLI.** You never write anything twice.
+
+### 2. Aliases Become MCP Tools Automatically
+
+Define `deploy` in YAML, and your AI agent gets `ssh_alias:prod-web-01:deploy`. **One line of YAML = one AI skill.** To the agent, server operations feel like local function calls.
+
+### 3. One Connection Pool, Shared by AI & Humans
+
+```
+AI Agent ──→ MCP Protocol ──→ ssh_client.py ──→ Remote Server
+Terminal ──→ CLI ──────────────→ ssh_client.py ──→ Remote Server
+```
+
+Same SSH connection, same connection pool, same config. AI deploys something, then you verify with `python cli.py` — same logic underneath. No duplicate tools, no duplicate config.
+
+### 4. Connection Pool + Proxy + Sudo
+
+- **Connection pool**: SSH connections auto-reused with 60s keepalive — no repeated handshakes
+- **SOCKS5 proxy**: Global or per-server, auto falls back to direct connect if proxy is down
+- **Sudo**: configure `sudo_password` once, run root commands without interactive prompts
+
+
+## Who Is This For?
+
+- 🧑‍💻 You manage multiple VPS instances and don't want to SSH into each one manually
+- 👥 Small teams with no dedicated DevOps — let AI help with daily checks
+- 🤖 You want your AI agent to actually *do things*, not just chat
+
+## Tech Stack
+
+Pure Python. Dependencies: `paramiko` + `pyyaml` + `pysocks`. Under 2,000 lines. Easy to read and hack.
 
 ```bash
-#!/usr/bin/env bash
-set -eo pipefail
-cd /opt/my-app
-git pull origin main 2>&1 | tail -5
-npm install && npm run build
-systemctl restart my-app
-echo "Deploy complete"
+pip install -r requirements.txt
 ```
 
-### Health Check Script
+## License & Feedback
 
-```bash
-#!/usr/bin/env bash
-echo "--- Service Status ---"
-systemctl status my-app --no-pager | head -10
-echo "--- Disk Usage ---"
-df -h /
-echo "--- Memory ---"
-free -h
-```
+MIT licensed. Use it however you want. A ⭐ means a lot to me.
 
-## Key Features
+Issues and PRs welcome — Chinese or English, both fine.
 
-- **Connection pooling**: SSH connections are reused with 60s keepalive
-- **SOCKS5 proxy**: Per-server or global proxy with automatic direct fallback
-- **Sudo support**: Execute commands as root via `sudo_password` in server config — `run_sudo()` API, `sudo` CLI, `sudo: true` in aliases
-- **Dynamic MCP tools**: Aliases auto-exposed as one-click MCP tools for AI agents
-- **Script management**: Upload, store, and execute scripts on remote servers
-- **No hardcoded paths**: All paths resolve dynamically via `Path(__file__).parent`
-- **External servers dir**: Server configs live outside the skill directory, configurable via `config.yaml`
+**GitHub: https://github.com/leehom0123/ssh-alias-mcp**
+
+
+📖 **[Full Technical Docs (DOCS.md)](DOCS.md)**

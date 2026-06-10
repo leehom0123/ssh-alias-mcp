@@ -1,7 +1,6 @@
 ---
 name: ssh-manager
 description: Manage remote Linux servers via SSH CLI or server-management MCP. Run commands, deploy, restart services, check logs, and upload scripts.
----
 
 # SSH Manager
 
@@ -42,4 +41,4 @@ python ./cli.py <server> list-aliases                  # 列出 alias
 
 ## 配置 & Alias
 
-服务器 yml、alias、共享继承的完整写法见 → [README.zh-CN.md](README.zh-CN.md)
+服务器 yml、alias、共享继承的完整写法见 → [DOCS.zh-CN.md](DOCS.zh-CN.md)
