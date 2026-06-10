@@ -18,15 +18,13 @@ A ~2,000-line Python tool that lets AI agents (Claude Code, Codex CLI, Cursor, W
 
 ## Why I Built This
 
-I run a handful of VPS instances for different projects. Daily ops are predictable: check if logs have errors, deploy new code, restart a container, see if disk is full again.
+I do a lot of dev and ops work: deploying projects, checking logs, troubleshooting server crashes. Painful, honestly — every time it's open terminal, SSH in, type commands. One server is fine; bouncing between several gets old fast.
 
-Every time: open terminal → SSH in → type commands → exit. Not painful, but definitely not fun.
+When AI agents started getting capable, I thought: why not let AI check my logs, analyze errors, deploy apps? But there was a problem — every time I asked AI to do something, it had to write out SSH connection details from scratch, burning through tokens fast. It hurt to watch.
 
-When Claude Code added MCP (Model Context Protocol) support, letting AI call external tools, I thought: *what if I just define my routine server tasks as skills and let AI handle them?*
+I first wrote a Python script for AI to call. It worked, but it didn't feel clean enough. So I took it all the way — built this MCP + CLI tool: **configure your servers in YAML once, AI and CLI both use it, AI never writes connection boilerplate again.**
 
-So I spent a day building this with paramiko. It worked way better than expected. Now I tell my AI agent "restart all three web servers," and it just does it.
-
-Open-sourcing in case anyone else managing a few servers finds it useful.
+Open-sourcing in case other devs stuck in the ops trenches find it useful.
 
 
 ## Get Started
