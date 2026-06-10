@@ -1,7 +1,5 @@
 # 🚀 ssh-alias-mcp — 让你的 AI Agent 直接管理 Linux 服务器
 
-**GitHub: https://github.com/leehom0123/ssh-alias-mcp**
-
 [English](README.md)
 
 📖 **[详细技术文档 (DOCS.zh-CN.md)](DOCS.zh-CN.md)** — 架构、全部配置项、MCP 工具参考、脚本示例
