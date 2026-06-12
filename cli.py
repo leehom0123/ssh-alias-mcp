@@ -3,18 +3,21 @@
 
 Usage:
     python cli.py list-servers
-    python cli.py <server> run "<command>"
-    python cli.py <server> alias <name>
-    python cli.py <server> upload <local-script> [-r]
+    python cli.py <server> run "<command>" [-s]      # -s = run as root via sudo
+    python cli.py <server> run-script <name> [-s]    # run uploaded script (optional sudo)
+    python cli.py <server> alias <name>              # sudo is part of the alias YAML config
+    python cli.py <server> upload <local-script> [-r] [-s] [-n NAME]
     python cli.py <server> upload-all
     python cli.py <server> list-scripts
     python cli.py <server> list-aliases
+    python cli.py <server> download <remote> <local> [-p PATTERN]
 
 Examples:
     python cli.py my-server run "tail -100 /var/log/app.log"
+    python cli.py my-server run "apt update" -s
+    python cli.py my-server run-script restart.sh -s
     python cli.py my-server alias healthcheck
     python cli.py my-server upload-all
-    python cli.py my-server run "docker ps"
 """
 import sys
 import json
@@ -27,25 +30,64 @@ HELP = """SSH Client CLI
 
 Usage:
     python cli.py list-servers
-    python cli.py <server> <command> [args...]
+    python cli.py <server> <command> [args...] [-s] [-t SECONDS]
 
 Commands:
-    list-servers              List all configured servers
-    <server> run <cmd>        Run a command on remote server
-    <server> sudo <cmd>       Run a command as root (requires sudo_password in server config)
-    <server> alias <name>     Run an alias-defined command
-    <server> upload <path>    Upload a local script (-r to run immediately)
-    <server> upload-all       Upload all scripts from alias definitions
-    <server> list-scripts     List uploaded scripts on remote
-    <server> list-aliases     List configured aliases
+    list-servers                List all configured servers
+    <server> run <cmd>          Run a command on remote server
+    <server> run-script <name>  Run an uploaded script (from scripts_dir)
+    <server> alias <name>       Run an alias-defined command (sudo set in YAML)
+    <server> upload <path>      Upload local script (-r = run after upload; -n NAME)
+    <server> download <remote> <local>  Download a file or dir from remote (-p PATTERN)
+    <server> upload-all         Upload all scripts from alias definitions
+    <server> list-scripts       List uploaded scripts on remote
+    <server> list-aliases       List configured aliases (local, no SSH)
+
+Common flags (work with ALL commands that connect to SSH):
+    -s, --sudo            Execute the operation as root (requires sudo_password
+                          in server config). For upload: stages via /tmp and
+                          installs preserving original owner/mode (or matching
+                          parent dir for new files). For download: stages via
+                          /tmp + chown to user, then SFTPs (original file is
+                          NEVER modified).
+    -t, --timeout SECS    Command timeout in seconds (default: 300)
+
+Per-command flags:
+    -n, --name NAME       (upload) Custom script name on remote
+    -r, --run             (upload) Run script immediately after upload
+    -p, --pattern PAT     (download) Regex pattern to filter filenames
 
 Examples:
     python cli.py my-server run "uptime"
-    python cli.py my-server sudo "apt update"
+    python cli.py my-server run "apt update" -s
+    python cli.py my-server run-script restart.sh -s
     python cli.py my-server alias healthcheck
-    python cli.py my-server upload D:\\scripts\\fix.sh -r
-    python cli.py my-server upload-all
+    python cli.py my-server upload ./fix.sh -r -s
+    python cli.py my-server download /var/log/secure ./secure.log -s
+    python cli.py my-server list-scripts -s     # list root-owned scripts dir
 """
+
+
+def _extract_flag(args: list, *flags) -> bool:
+    """Pop boolean flag from args, return True if present."""
+    found = False
+    for f in flags:
+        while f in args:
+            args.remove(f)
+            found = True
+    return found
+
+
+def _extract_opt(args: list, *flags, default=None):
+    """Pop --opt VALUE pair from args, return value or default."""
+    for f in flags:
+        if f in args:
+            idx = args.index(f)
+            if idx + 1 < len(args):
+                value = args[idx + 1]
+                del args[idx:idx + 2]
+                return value
+    return default
 
 
 def main():
@@ -55,15 +97,6 @@ def main():
 
     first = sys.argv[1]
     rest = sys.argv[2:]
-    timeout = 300
-
-    # Parse -t / --timeout
-    i = 2
-    while i < len(sys.argv) - 1:
-        if sys.argv[i] in ("-t", "--timeout"):
-            timeout = int(sys.argv[i + 1])
-            rest = [a for a in rest if a not in ("-t", "--timeout", str(timeout))]
-        i += 1
 
     # list-servers
     if first == "list-servers":
@@ -71,26 +104,20 @@ def main():
         print(json.dumps({"count": len(servers), "servers": servers}, indent=2, ensure_ascii=False))
         return
 
+    # Parse common flags first (mutating `rest`)
+    timeout_str = _extract_opt(rest, "-t", "--timeout")
+    timeout = int(timeout_str) if timeout_str is not None else 300
+    sudo = _extract_flag(rest, "-s", "--sudo")
+
     # Get connection
-    try:
-        conn = pool.get(first)
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+    conn = pool.get(first)
 
     # Route command
     cmd = rest[0] if rest else None
 
     if cmd == "run" and len(rest) >= 2:
-        result = conn.run(" ".join(rest[1:]), timeout=timeout)
-        if result["stdout"]:
-            sys.stdout.write(result["stdout"])
-        if result["stderr"]:
-            sys.stderr.write(result["stderr"])
-        sys.exit(result["code"])
-
-    elif cmd == "sudo" and len(rest) >= 2:
-        result = conn.run_sudo(" ".join(rest[1:]), timeout=timeout)
+        command = " ".join(rest[1:])
+        result = conn.run(command, timeout=timeout, sudo=sudo)
         if result["stdout"]:
             sys.stdout.write(result["stdout"])
         if result["stderr"]:
@@ -98,7 +125,16 @@ def main():
         sys.exit(result["code"])
 
     elif cmd == "alias" and len(rest) >= 2:
+        # sudo for alias is defined inside the YAML (per-alias `sudo: true`)
         result = conn.run_alias(rest[1])
+        if result["stdout"]:
+            sys.stdout.write(result["stdout"])
+        if result["stderr"]:
+            sys.stderr.write(result["stderr"])
+        sys.exit(result["code"])
+
+    elif cmd == "run-script" and len(rest) >= 2:
+        result = conn.run_script(rest[1], timeout=timeout, sudo=sudo)
         if result["stdout"]:
             sys.stdout.write(result["stdout"])
         if result["stderr"]:
@@ -107,13 +143,11 @@ def main():
 
     elif cmd == "upload" and len(rest) >= 2:
         local_script = rest[1]
-        run_immediately = "-r" in rest or "--run" in rest
-        name = None
-        for j, a in enumerate(rest):
-            if a in ("-n", "--name") and j + 1 < len(rest):
-                name = rest[j + 1]
+        run_immediately = _extract_flag(rest, "-r", "--run")
+        name = _extract_opt(rest, "-n", "--name")
         result = conn.upload_script(local_script, script_name=name,
-                                     run_immediately=run_immediately, timeout=timeout)
+                                     run_immediately=run_immediately,
+                                     timeout=timeout, sudo=sudo)
         print(result["stdout"], end="")
         if result.get("run_stdout"):
             print(result["run_stdout"], end="")
@@ -122,12 +156,12 @@ def main():
         sys.exit(result["code"])
 
     elif cmd == "upload-all":
-        result = conn.upload_all_scripts()
+        result = conn.upload_all_scripts(sudo=sudo)
         print(result["stdout"], end="")
         sys.exit(result["code"])
 
     elif cmd == "list-scripts":
-        result = conn.list_scripts()
+        result = conn.list_scripts(sudo=sudo)
         if result["stdout"]:
             sys.stdout.write(result["stdout"])
         sys.exit(result["code"])
@@ -135,6 +169,19 @@ def main():
     elif cmd == "list-aliases":
         aliases = conn.list_aliases()
         print(json.dumps({"count": len(aliases), "aliases": aliases}, indent=2, ensure_ascii=False))
+
+    elif cmd == "download" and len(rest) >= 3:
+        remote_path = rest[1]
+        local_path = rest[2]
+        pattern = _extract_opt(rest, "-p", "--pattern")
+        overwrite = not _extract_flag(rest, "--no-overwrite")
+        result = conn.download(remote_path, local_path, timeout=timeout,
+                               pattern=pattern, overwrite=overwrite, sudo=sudo)
+        if result["stdout"]:
+            sys.stdout.write(result["stdout"])
+        if result["stderr"]:
+            sys.stderr.write(result["stderr"])
+        sys.exit(result["code"])
 
     else:
         print(f"Usage: python cli.py <server> <command>", file=sys.stderr)

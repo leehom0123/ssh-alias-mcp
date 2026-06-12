@@ -1,10 +1,6 @@
 ---
-name: ssh-manager
-description: Manage remote Linux servers via SSH CLI or server-management MCP. Run commands, deploy, restart services, check logs, and upload scripts.
-
-# SSH Manager
-
-Two ways to operate: **MCP tools** (directly in the AI agent session) and **CLI** (manual terminal use).
+name: ssh-alias-mcp
+description: AI-driven server operations via SSH CLI or ssh-alias-mcp MCP. Run commands, deploy, restart services, check logs, and upload scripts. Supports bash, cmd, and powershell.
 
 ## MCP Tools
 
@@ -12,32 +8,28 @@ Two ways to operate: **MCP tools** (directly in the AI agent session) and **CLI*
 |------|------------|-------------|
 | `ssh_list_servers` | — | List all configured servers |
 | `ssh_list_aliases` | `server` | List quick-command aliases |
-| `ssh_list_scripts` | `server` | List uploaded scripts on remote |
-| `ssh_run` | `server`, `command`, `timeout`(default 60s) | Execute a command |
-| `ssh_run_sudo` | `server`, `command`, `timeout`(default 60s) | Execute as root (requires `sudo_password`) |
+| `ssh_list_scripts` | `server`, `sudo`(default false) | List uploaded scripts on remote. With `sudo: true`, list root-owned scripts_dir. |
+| `ssh_run` | `server`, `command`, `timeout`(default 60s), `sudo`(default false) | Execute a command. Set `sudo: true` to run as root (requires `sudo_password`). |
 | `ssh_run_alias` | `server`, `alias_name` | Run an alias |
-| `ssh_run_script` | `server`, `script_name`, `timeout`(default 300s) | Run an uploaded script |
-| `ssh_upload_script` | `server`, `local_path`, `script_name`(optional), `run_immediately`(default false), `timeout`(default 300s) | Upload a script |
+| `ssh_run_script` | `server`, `script_name`, `timeout`(default 300s), `sudo`(default false) | Run an uploaded script. Set `sudo: true` to run as root. |
+| `ssh_upload_script` | `server`, `local_path`, `script_name`(optional), `run_immediately`(default false), `timeout`(default 300s), `overwrite`(default true), `sudo`(default false) | Upload a script. With `sudo: true`, stages via /tmp and installs preserving original owner/mode. |
+| `ssh_download` | `server`, `remote_path`, `local_path`, `pattern`(optional regex), `timeout`(default 300s), `sudo`(default false) | Download a file or directory from remote. With `sudo: true`, reads root-owned files via /tmp staging. |
 | `ssh_alias:{server}:{name}` | — (auto-generated) | One-click alias execution |
-| `ssh_upload_all_scripts` | `server` | Upload all scripts from alias definitions |
+| `ssh_upload_all_scripts` | `server`, `sudo`(default false) | Upload all scripts from alias definitions. With `sudo: true`, installs as root. |
 
 ### Notes
-- **sudo** — Use `ssh_run_sudo`, do not inline `sudo -S` in `ssh_run`
-- **Prefer aliases** — Define common operations as aliases, invoke via `ssh_run_alias`
-- **Docker permissions** — If the user is not in the `docker` group, set `sudo: true` on the alias or use `ssh_run_sudo`
+- **sudo** — Use `ssh_run` with `sudo: true`, do not inline `sudo -S` in `ssh_run`
+- **Docker permissions** — If the user is not in the `docker` group, set `sudo: true` on the alias
 
-## CLI Commands
+## Shell Support
 
-```
-python ./cli.py list-servers                            # List all servers
-python ./cli.py <server> run "<command>" [-t sec]        # Execute a remote command
-python ./cli.py <server> sudo "<command>" [-t sec]       # Execute as root (requires sudo_password)
-python ./cli.py <server> alias <alias-name>              # Run an alias
-python ./cli.py <server> upload <local-path> [-r|--run] [-n name]  # Upload script (-r/--run to run immediately)
-python ./cli.py <server> upload-all                      # Upload all alias scripts
-python ./cli.py <server> list-scripts                    # List uploaded scripts
-python ./cli.py <server> list-aliases                    # List aliases
-```
+Set `shell` in server YAML to auto-adapt commands:
+
+| Shell | Use Case |
+|-------|---------|
+| `bash` | Linux/macOS servers (default) |
+| `cmd` | Windows servers (CMD) |
+| `powershell` | Windows servers (PowerShell) |
 
 ## Configuration & Aliases
 

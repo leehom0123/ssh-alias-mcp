@@ -6,19 +6,14 @@
 
 直接 clone 到 agent 的 skills 目录下：
 
-**Claude Code（项目级）：**
+**Claude Code：**
 ```bash
-git clone https://github.com/leehom0123/ssh-alias-mcp.git .claude/skills/ssh-manager
-```
-
-**Claude Code（全局）：**
-```bash
-git clone https://github.com/leehom0123/ssh-alias-mcp.git ~/.claude/skills/ssh-manager
+git clone https://github.com/leehom0123/ssh-alias-mcp.git ~/.claude/skills/ssh-alias-mcp
 ```
 
 **Codex CLI：**
 ```bash
-git clone https://github.com/leehom0123/ssh-alias-mcp.git ~/.codex/skills/ssh-manager
+git clone https://github.com/leehom0123/ssh-alias-mcp.git ~/.codex/skills/ssh-alias-mcp
 ```
 
 要求：Python ≥ 3.9
@@ -26,7 +21,7 @@ git clone https://github.com/leehom0123/ssh-alias-mcp.git ~/.codex/skills/ssh-ma
 ## 2. 安装依赖
 
 ```bash
-pip install -r <skills-dir>/ssh-manager/requirements.txt
+pip install -r <skills-dir>/ssh-alias-mcp/requirements.txt
 ```
 
 依赖只有三个：`paramiko`、`pyyaml`、`pysocks`。没有其他要求。
@@ -39,9 +34,9 @@ pip install -r <skills-dir>/ssh-manager/requirements.txt
 ```json
 {
   "mcpServers": {
-    "server-management": {
+    "ssh-alias-mcp": {
       "command": "python",
-      "args": ["<skills-dir>/ssh-manager/mcp_server.py"]
+      "args": ["<skills-dir>/ssh-alias-mcp/mcp_server.py"]
     }
   }
 }
@@ -51,9 +46,9 @@ pip install -r <skills-dir>/ssh-manager/requirements.txt
 ```json
 {
   "mcpServers": {
-    "server-management": {
+    "ssh-alias-mcp": {
       "command": "python",
-      "args": ["<skills-dir>/ssh-manager/mcp_server.py"]
+      "args": ["<skills-dir>/ssh-alias-mcp/mcp_server.py"]
     }
   }
 }
@@ -67,7 +62,7 @@ pip install -r <skills-dir>/ssh-manager/requirements.txt
 
 ```bash
 # 用 CLI 验证配置是否正常（非必需，但建议跑一下）
-python <skills-dir>/ssh-manager/cli.py list-servers
+python <skills-dir>/ssh-alias-mcp/cli.py list-servers
 ```
 
 如果 `servers/` 目录已有 `.yml` 配置，CLI 会列出服务器信息。没有服务器配置文件也会正常运行，只是返回空列表。
@@ -75,11 +70,13 @@ python <skills-dir>/ssh-manager/cli.py list-servers
 Agent 会话中应该能看到以下 MCP 工具：
 - `ssh_list_servers`
 - `ssh_run`
-- `ssh_run_sudo`
 - `ssh_upload_script`
 - `ssh_run_script`
 - `ssh_run_alias`
 - `ssh_list_aliases`
+- `ssh_download`
+- `ssh_list_scripts`
+- `ssh_upload_all_scripts`
 - `ssh_alias:{server}:{name}`（每个 alias 一个）
 
 ## 5. 添加服务器

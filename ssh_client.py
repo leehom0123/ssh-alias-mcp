@@ -16,9 +16,11 @@ Usage:
     print(result["stdout"])
 
     # MCP mode (via mcp_server.py)
-    claude mcp add server-management python <path>/mcp_server.py
+    claude mcp add ssh-alias-mcp python <path>/mcp_server.py
 """
+import hashlib
 import io
+import re
 import sys
 import time
 import threading
@@ -38,33 +40,112 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 CONFIG_PATH = SCRIPT_DIR / "config.yaml"
 
 
+def _normalize_path(raw: str) -> str:
+    """Normalize a path string for the current OS.
+
+    Converts Windows-style drive paths (e.g. 'D:\\agents\\servers') to WSL
+    /mnt/<drive>/... form when running under Linux. No-op elsewhere.
+    """
+    if not raw or sys.platform != "linux":
+        return raw
+    s = str(raw).replace("\\", "/")
+    # Match "X:/..." pattern
+    if len(s) >= 2 and s[1] == ":" and s[0].isalpha():
+        drive = s[0].lower()
+        rest = s[2:].lstrip("/")
+        return f"/mnt/{drive}/{rest}"
+    return s
+
+
 def load_yaml(path: str) -> dict:
     """Load a YAML config file."""
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Config file not found: {p}")
     text = p.read_text(encoding="utf-8-sig")
-    try:
-        return yaml.safe_load(text) or {}
-    except yaml.YAMLError as e:
-        raise ValueError(f"YAML parse error: {e}")
+    return yaml.safe_load(text) or {}
 
 
 def load_global_config() -> dict:
     """Load global configuration (proxy, timeout, etc.)"""
     if not CONFIG_PATH.exists():
         return {"proxy": {"enabled": False}, "server": {"timeout": 30}}
-    try:
-        return load_yaml(str(CONFIG_PATH))
-    except Exception:
-        return {"proxy": {"enabled": False}, "server": {"timeout": 30}}
+    return load_yaml(str(CONFIG_PATH))
 
 
 global_config: dict = load_global_config()
 
 # servers_dir can be configured in config.yaml (absolute or relative to config file)
-_servers_dir_cfg = global_config.get("servers_dir", "servers")
+_servers_dir_cfg = _normalize_path(global_config.get("servers_dir", "servers"))
 SERVERS_DIR = (CONFIG_PATH.parent / _servers_dir_cfg).resolve() if _servers_dir_cfg else SCRIPT_DIR / "servers"
+
+
+# Command templates keyed by shell type.
+# Available placeholders: path, src, dst, tmp, target, mode, user
+CMD_TEMPLATES = {
+    "bash": {
+        "mkdir":        "mkdir -p {path}",
+        "file_exists":  "test -f {path}",
+        "run_script":   "bash {path}",
+        "chmod":        "chmod {mode:o} {path}",
+        "stat_owner":   "stat -c '%U:%G' {path}",
+        "stat_mode":    "stat -c '%a' {path}",
+        "rm_dir":       "rm -rf {path}",
+        "cp_r":         "cp -r {src} {dst}",
+        "move":         "mv {tmp} {target}",
+        "chown":        "chown {user} {path}",
+        "chown_r":      "chown -R {user}:{user} {path}",
+        "list_dir":     "ls -la {path}/",
+        "install":      (
+            "if [ -e '{target}' ]; then "
+            "  OWN=$(stat -c '%u:%g' '{target}'); "
+            "  MODE=$(stat -c '%a' '{target}'); "
+            "  mv {tmp} '{target}' && "
+            "  chown $OWN '{target}' && "
+            "  chmod $MODE '{target}'; "
+            "else "
+            "  PARENT=$(dirname '{target}'); "
+            "  OWN=$(stat -c '%u:%g' \"$PARENT\"); "
+            "  mv {tmp} '{target}' && "
+            "  chown $OWN '{target}' && "
+            "  chmod 755 '{target}'; "
+            "fi"
+        ),
+        "tmp_prefix":   "/tmp",
+    },
+    "cmd": {
+        "mkdir":        'cmd /c "mkdir \\"{path}\\" 2>nul"',
+        "file_exists":  'cmd /c "if exist \\"{path}\\" echo exists"',
+        "run_script":   'cmd /c "call {path}"',
+        "chmod":        "",  # no-op on Windows cmd
+        "stat_owner":   "echo n/a",
+        "stat_mode":    "echo n/a",
+        "rm_dir":       'cmd /c "rmdir /S /Q \\"{path}\\""',
+        "cp_r":         'cmd /c "xcopy /Y \\"{src}\\" \\"{dst}\\" /E /I"',
+        "move":         'cmd /c "move /y \\"{tmp}\\" \\"{target}\\""',
+        "chown":        "",  # no-op
+        "chown_r":      "",  # no-op
+        "list_dir":     'dir "{path}" /Q',
+        "install":      'cmd /c "move /y \\"{tmp}\\" \\"{target}\\""',
+        "tmp_prefix":   "%TEMP%",
+    },
+    "powershell": {
+        "mkdir":        'New-Item -ItemType Directory -Path "{path}" -Force',
+        "file_exists":  'Test-Path "{path}"',
+        "run_script":   '& "{path}"',
+        "chmod":        "",  # no-op
+        "stat_owner":   'echo n/a',
+        "stat_mode":    'echo n/a',
+        "rm_dir":       'Remove-Item -Recurse -Force "{path}"',
+        "cp_r":         'Copy-Item -Recurse "{src}" "{dst}"',
+        "move":         'Move-Item -Force "{tmp}" "{target}"',
+        "chown":        "",  # no-op
+        "chown_r":      "",  # no-op
+        "list_dir":     'Get-ChildItem -Path "{path}" | Format-List',
+        "install":      'Move-Item -Force "{tmp}" "{target}"',
+        "tmp_prefix":   "$env:TEMP",
+    },
+}
 
 
 class SSHConnection:
@@ -76,15 +157,28 @@ class SSHConnection:
         self.port = int(cfg.get("port", 22))
         self.user = cfg["user"]
         self.password = cfg.get("password")
-        self.key_path = cfg.get("key")
+        self.key_path = _normalize_path(cfg.get("key", "")) or None
         self.key_password = cfg.get("key_password")
         self.sudo_password = cfg.get("sudo_password") or cfg.get("password")
         self.timeout = int(cfg.get("timeout",
                                    global_config.get("server", {}).get("timeout", 30)))
         self.scripts_dir = cfg.get("scripts_dir",
-                                   f"/home/{cfg.get('user', 'root')}/scripts")
+                                     f"/home/{cfg.get('user', 'root')}/scripts")
+        self.shell = cfg.get("shell", "bash")  # "bash", "cmd", "powershell"
+        self._tpl = CMD_TEMPLATES[self.shell]
         self.aliases = aliases or []
         self._yml_path = yml_path
+
+        # Security: command filtering
+        self.whitelist = [re.compile(p) for p in cfg.get("whitelist", [])]
+        self.blacklist = [re.compile(p) for p in cfg.get("blacklist", [])]
+        self.command_template = cfg.get("command_template", "")
+
+        # Security: path restrictions for upload/download
+        self._allowed_paths = {
+            "local": [str(Path(p).resolve()) for p in cfg.get("allowed_local_paths", [])],
+            "remote": [str(p) for p in cfg.get("allowed_remote_paths", [])],
+        }
 
         # Proxy config: per-server takes priority, then global fallback
         self.proxy = cfg.get("proxy")
@@ -119,18 +213,12 @@ class SSHConnection:
             self._last_used = time.time()
             return
         if self._client:
-            try:
-                self._client.close()
-            except Exception:
-                pass
+            self._client.close()
             self._client = None
 
         # Check pysocks availability
         if proxy:
-            try:
-                import socks  # noqa: F401
-            except ImportError:
-                raise RuntimeError("Proxy enabled but pysocks not installed. Run: pip install pysocks")
+            import socks  # noqa: F401
 
         # Try proxy connection first
         if proxy:
@@ -202,8 +290,185 @@ class SSHConnection:
         except Exception:
             pass
 
-    def run(self, cmd: str, timeout: int = 300) -> dict:
-        """Execute a remote command, returns {stdout, stderr, code}"""
+    def download(self, remote_path: str, local_path: str, timeout: int = 300,
+                 pattern: str = None, overwrite: bool = True, sudo: bool = False) -> dict:
+        """Download a file or directory from remote to local via SFTP.
+
+        If remote_path is a directory, recursively downloads all files.
+        Optionally filter by regex pattern on filenames.
+
+        Args:
+            sudo: if True, read root-owned files by staging through /tmp:
+                  `sudo cp -r <src> /tmp/<uuid>` -> `sudo chown <user>` -> SFTP get -> remove tmp.
+        """
+        self.connect()
+
+        if self._path_allowed(local_path, "local"):
+            raise ValueError(f"Local path not allowed: {local_path}")
+
+        # When sudo, stage entire source tree to a user-readable temp location first
+        actual_remote = remote_path
+        tmp_stage = None
+        if sudo:
+            tmp_prefix = self._cmd("tmp_prefix")
+            tmp_stage = f"{tmp_prefix}/.dl_stage_{uuid.uuid4().hex[:8]}"
+            stage = self.run(
+                self._cmd("cp_r", src=remote_path, dst=tmp_stage),
+                timeout=timeout, sudo=True,
+            )
+            if stage["code"] != 0:
+                raise RuntimeError(f"sudo stage failed: {stage['stderr'].strip()[:200]}")
+            if self._is_unix():
+                self.run(self._cmd("chown_r", user=self.user, path=tmp_stage),
+                          timeout=10, sudo=True)
+            actual_remote = tmp_stage
+
+        try:
+            # Check if (staged) remote is a directory
+            sftp = paramiko.SFTPClient.from_transport(self._client.get_transport())
+            remote_attr = sftp.stat(actual_remote)
+            is_dir = (remote_attr.st_mode & 0o170000) == 0o040000
+
+            if not is_dir:
+                if self._path_allowed(remote_path, "remote"):
+                    raise ValueError(f"Remote path not allowed: {remote_path}")
+                local_path_obj = Path(local_path)
+                if not overwrite and local_path_obj.exists():
+                    raise FileExistsError(f"Local path already exists: {local_path}")
+                local_dir = local_path_obj.parent
+                if not local_dir.exists():
+                    local_dir.mkdir(parents=True, exist_ok=True)
+                sftp.get(actual_remote, str(local_path))
+                sftp.close()
+                return {
+                    "stdout": f"Downloaded {remote_path} -> {local_path}\n",
+                    "stderr": "",
+                    "code": 0,
+                    "remote_path": remote_path,
+                    "local_path": local_path,
+                }
+
+            # Directory download
+            return self._download_dir(sftp, actual_remote, local_path, pattern, timeout,
+                                      display_remote=remote_path)
+        finally:
+            if tmp_stage:
+                self.run(self._cmd("rm_dir", path=tmp_stage), timeout=15, sudo=True)
+
+    def _download_dir(self, sftp, remote_dir: str, local_dir: str,
+                      pattern: str = None, timeout: int = 300,
+                      display_remote: str = None) -> dict:
+        """Recursively download a remote directory."""
+        if pattern:
+            pat = re.compile(pattern)
+        display = display_remote or remote_dir
+
+        total = 0
+        errors = []
+
+        def recurse(remote, local):
+            nonlocal total
+            if not local.exists():
+                local.mkdir(parents=True, exist_ok=True)
+            entries = sftp.listdir_attr(remote)
+            for entry in entries:
+                name = entry.filename
+                if name in (".", ".."):
+                    continue
+                rpath = f"{remote}/{name}"
+                lpath = local / name
+                is_dir = (entry.st_mode & 0o170000) == 0o040000
+                if is_dir:
+                    recurse(rpath, lpath)
+                else:
+                    if pattern and not pat.search(name):
+                        continue
+                    if self._path_allowed(rpath, "remote"):
+                        errors.append(f"  x {rpath}: path not allowed")
+                        continue
+                    lpath.parent.mkdir(parents=True, exist_ok=True)
+                    sftp.get(rpath, str(lpath))
+                    total += 1
+
+        local_path = Path(local_dir)
+        if not local_path.exists():
+            local_path.mkdir(parents=True, exist_ok=True)
+        recurse(remote_dir, local_path)
+        sftp.close()
+
+        lines = [f"Downloaded {total} files from {display} -> {local_dir}\n"]
+        if errors:
+            lines.append("Errors:\n" + "\n".join(errors))
+        return {
+            "stdout": "".join(lines),
+            "stderr": "",
+            "code": 1 if errors else 0,
+            "remote_path": display,
+            "local_path": str(local_dir),
+            "count": total,
+        }
+
+    def _path_allowed(self, path: str, kind: str) -> bool:
+        """Check if path is in allowed list. Returns True if disallowed."""
+        allowed = self._allowed_paths.get(kind, [])
+        if not allowed:
+            return False  # No restriction
+        resolved = str(Path(path).resolve())
+        return not any(resolved.startswith(p) for p in allowed)
+
+    def _check_command(self, cmd: str) -> str:
+        """Check command against whitelist/blacklist, return template if set. Raises on violation."""
+        # Check blacklist
+        for pattern in self.blacklist:
+            if pattern.search(cmd):
+                raise ValueError(f"Command blocked by blacklist: {pattern.pattern}")
+        # Check whitelist (if configured)
+        if self.whitelist:
+            if not any(p.search(cmd) for p in self.whitelist):
+                raise ValueError(f"Command not in whitelist: {cmd}")
+        # Apply command template
+        if self.command_template:
+            cmd = self.command_template.replace("<command>", cmd)
+        return cmd
+
+    def _wrap_sudo(self, cmd: str) -> str:
+        """Wrap a command to run via sudo.
+
+        bash: uses echo|sudo -S to avoid TTY prompt.
+        cmd/powershell: uses echo|sudo -S bash -c (requires bash available on remote).
+        Raises ValueError for non-bash shells if sudo_password is not set.
+        """
+        if not self.sudo_password:
+            raise ValueError("sudo_password not configured for this server")
+        if self.shell == "bash":
+            safe = cmd.replace("'", "'\\''")
+            return f"echo '{self.sudo_password}' | sudo -S bash -c '{safe}'"
+        elif self.shell in ("cmd", "powershell"):
+            # Windows: sudo requires bash available (e.g., WSL or Git Bash)
+            safe = cmd.replace("'", "'\\''")
+            return f"echo '{self.sudo_password}' | sudo -S bash -c '{safe}'"
+        raise ValueError(f"Unsupported shell for sudo: {self.shell}")
+
+    def _strip_sudo_noise(self, result: dict) -> dict:
+        """Remove '[sudo]' password prompt lines from output."""
+        for stream in ("stdout", "stderr"):
+            result[stream] = "\n".join(
+                l for l in result[stream].split("\n")
+                if "Password:" not in l and "[sudo:" not in l
+            ).strip("\n")
+        return result
+
+    def run(self, cmd: str, timeout: int = 300, sudo: bool = False) -> dict:
+        """Execute a remote command, returns {stdout, stderr, code}.
+
+        Args:
+            cmd: shell command to execute
+            timeout: seconds before giving up
+            sudo: if True, wrap with `echo pwd | sudo -S bash -c '...'`
+        """
+        cmd = self._check_command(cmd)
+        if sudo:
+            cmd = self._wrap_sudo(cmd)
         self.connect()
         ch = self._client.get_transport().open_session()
         ch.settimeout(timeout)
@@ -226,60 +491,24 @@ class SSHConnection:
             stderr_data.append(ch.recv_stderr(65536))
 
         rc = ch.recv_exit_status() if ch.exit_status_ready() else -1
-        return {
+        ch.close()
+        result = {
             "stdout": b"".join(stdout_data).decode(errors="replace"),
             "stderr": b"".join(stderr_data).decode(errors="replace"),
             "code": rc,
         }
-
-    def run_sudo(self, cmd: str, timeout: int = 300) -> dict:
-        """Execute a command as root (auto-pipes sudo password)"""
-        if not self.sudo_password:
-            raise ValueError("sudo_password not configured for this server")
-        # Use echo | sudo -S to avoid interactive password prompt
-        safe_cmd = cmd.replace("'", "'\\''")
-        sudo_cmd = f"echo '{self.sudo_password}' | sudo -S bash -c '{safe_cmd}'"
-        result = self.run(sudo_cmd, timeout=timeout)
-        # Strip sudo password prompts from output (may appear in stdout or stderr)
-        result["stdout"] = "\n".join(
-            l for l in result["stdout"].split("\n")
-            if "Password:" not in l and "[sudo:" not in l
-        ).strip("\n")
-        result["stderr"] = "\n".join(
-            l for l in result["stderr"].split("\n")
-            if "Password:" not in l and "[sudo:" not in l
-        ).strip("\n")
-        return result
-
-    def upload_and_run(self, local_path: str, remote_dir: str = "/tmp",
-                       shell: str = "bash", timeout: int = 300) -> dict:
-        """Upload a local script, execute it on the remote, then auto-cleanup"""
-        self.connect()
-        script_name = f".remote_script_{uuid.uuid4().hex[:8]}.sh"
-        remote_path = f"{remote_dir}/{script_name}"
-
-        try:
-            if not Path(local_path).exists():
-                raise FileNotFoundError(f"Local script not found: {local_path}")
-            script_content = Path(local_path).read_bytes()
-
-            sftp = paramiko.SFTPClient.from_transport(self._client.get_transport())
-            sftp.putfo(io.BytesIO(script_content), remote_path)
-            sftp.chmod(remote_path, 0o755)
-            sftp.close()
-
-            cmd = f"{shell} {remote_path}"
-            result = self.run(cmd, timeout=timeout)
-            return result
-        finally:
-            try:
-                self.run(f"rm -f {remote_path}", timeout=10)
-            except Exception:
-                pass
+        return self._strip_sudo_noise(result) if sudo else result
 
     def upload_script(self, local_path: str, script_name: str = None,
-                      run_immediately: bool = False, timeout: int = 300) -> dict:
-        """Upload a local script to the remote scripts_dir, optionally run immediately"""
+                      run_immediately: bool = False, timeout: int = 300,
+                      overwrite: bool = True, sudo: bool = False) -> dict:
+        """Upload a local script to the remote scripts_dir, optionally run immediately.
+
+        Args:
+            sudo: if True, write the script as root via stage-via-/tmp
+                  (SFTP -> tmp -> sudo mv -> chmod). When run_immediately=True,
+                  also execute the script as root.
+        """
         self.connect()
 
         if not Path(local_path).exists():
@@ -290,12 +519,26 @@ class SSHConnection:
             script_name = Path(local_path).name
         remote_path = f"{self.scripts_dir}/{script_name}"
 
-        self.run(f"mkdir -p {self.scripts_dir}", timeout=10)
+        if not overwrite:
+            check = self.run(self._cmd("file_exists", path=remote_path), timeout=5, sudo=sudo)
+            if check["code"] == 0:
+                raise FileExistsError(f"Remote script already exists: {remote_path}")
 
-        sftp = paramiko.SFTPClient.from_transport(self._client.get_transport())
-        sftp.putfo(io.BytesIO(script_content), remote_path)
-        sftp.chmod(remote_path, 0o755)
-        sftp.close()
+        self.run(self._cmd("mkdir", path=self.scripts_dir), timeout=10, sudo=sudo)
+
+        if sudo:
+            tmp_prefix = self._cmd("tmp_prefix")
+            tmp_path = f"{tmp_prefix}/.staging_{uuid.uuid4().hex[:8]}_{script_name}"
+            sftp = paramiko.SFTPClient.from_transport(self._client.get_transport())
+            sftp.putfo(io.BytesIO(script_content), tmp_path)
+            sftp.close()
+            self.run(self._cmd("install", tmp=tmp_path, target=remote_path), timeout=15, sudo=True)
+        else:
+            sftp = paramiko.SFTPClient.from_transport(self._client.get_transport())
+            sftp.putfo(io.BytesIO(script_content), remote_path)
+            if self._is_unix():
+                sftp.chmod(remote_path, 0o755)
+            sftp.close()
 
         result = {
             "stdout": f"Script uploaded to {remote_path}\n",
@@ -305,7 +548,8 @@ class SSHConnection:
         }
 
         if run_immediately:
-            run_result = self.run(f"bash {remote_path}", timeout=timeout)
+            run_cmd = self._cmd("run_script", path=remote_path)
+            run_result = self.run(run_cmd, timeout=timeout, sudo=sudo)
             result["run_stdout"] = run_result["stdout"]
             result["run_stderr"] = run_result["stderr"]
             result["run_code"] = run_result["code"]
@@ -313,46 +557,130 @@ class SSHConnection:
 
         return result
 
-    def list_scripts(self) -> dict:
+    def list_scripts(self, sudo: bool = False) -> dict:
         """List uploaded scripts on the remote server"""
         self.connect()
-        return self.run(f"ls -la {self.scripts_dir}/", timeout=30)
+        return self.run(self._cmd("list_dir", path=self.scripts_dir), timeout=30, sudo=sudo)
 
-    def run_script(self, script_name: str, timeout: int = 300) -> dict:
-        """Run an already-uploaded script"""
+    def run_script(self, script_name: str, timeout: int = 300, sudo: bool = False) -> dict:
+        """Run an already-uploaded script.
+
+        Args:
+            script_name: file name under scripts_dir
+            timeout: command timeout in seconds
+            sudo: if True, execute as root (requires sudo_password configured)
+        """
         self.connect()
         remote_path = f"{self.scripts_dir}/{script_name}"
-        return self.run(f"bash {remote_path}", timeout=timeout)
+        return self.run(self._cmd("run_script", path=remote_path), timeout=timeout, sudo=sudo)
 
-    def upload_all_scripts(self) -> dict:
-        """Upload all .sh files referenced by alias 'script' fields"""
+    def _cmd(self, name: str, **kwargs) -> str:
+        """Format a command template with the given parameters."""
+        tpl = self._tpl[name]
+        if not tpl:
+            return ""
+        return tpl.format(**kwargs)
+
+    def _scripts_base(self) -> Path:
+        """Get the base directory for resolving relative script paths.
+        Resolution: yml file's directory.
+        """
+        if self._yml_path:
+            return Path(self._yml_path).parent.resolve()
+        return Path.cwd()
+
+    def _is_unix(self) -> bool:
+        """Check if shell is Unix-like."""
+        return self.shell == "bash"
+
+    def upload_all_scripts(self, sudo: bool = False, overwrite: bool = True) -> dict:
+        """Upload all scripts referenced by alias 'script' fields.
+
+        Args:
+            sudo: if True, uploads via stage-via-/tmp + sudo mv (for root-owned dirs).
+            overwrite: if False, skip files that already exist on remote (default True).
+        """
         script_aliases = [a for a in self.aliases if a.get("script")]
         if not script_aliases:
             return {"stdout": "No alias with 'script' field found.\n", "stderr": "", "code": 0}
 
         self.connect()
-        self.run(f"mkdir -p {self.scripts_dir}", timeout=10)
+        self.run(self._cmd("mkdir", path=self.scripts_dir), timeout=10, sudo=sudo)
 
         sftp = paramiko.SFTPClient.from_transport(self._client.get_transport())
         msg, fail = [], []
+        seen_hashes = {}
+        base = self._scripts_base()
         for a in script_aliases:
-            src = Path(a["script"])
-            remote_name = src.name  # script filename goes directly under scripts_dir
-            remote = f"{self.scripts_dir}/{remote_name}"
-            try:
-                if not src.is_file():
-                    fail.append(f"  x {a['script']}: file not found")
-                    continue
-                sftp.put(str(src), remote)
-                sftp.chmod(remote, 0o755)
-                msg.append(f"  + {remote_name}")
-            except Exception as e:
-                fail.append(f"  x {a['script']}: {e}")
+            src = (base / a["script"]).resolve()
+            if not src.is_file():
+                fail.append(f"  x {a['script']}: file not found at {src}")
+                continue
+            content_hash = hashlib.md5(src.read_bytes()).hexdigest()
+            if content_hash in seen_hashes:
+                prev_alias = seen_hashes[content_hash]
+                fail.append(f"  x {a['script']}: duplicate content of {prev_alias}")
+                continue
+            seen_hashes[content_hash] = a["name"]
+            remote_name = src.name
+            if src.is_relative_to(base):
+                rel = src.relative_to(base).as_posix()
+                remote = f"{self.scripts_dir}/{rel}"
+            else:
+                remote = f"{self.scripts_dir}/external/{remote_name}"
+            remote_parent = str(Path(remote).parent)
+            self.run(self._cmd("mkdir", path=remote_parent), timeout=10, sudo=sudo)
+            self._upload_single(sftp, src, remote, sudo, a, msg, fail, overwrite)
         sftp.close()
 
         out = f"Upload done ({len(msg)}/{len(script_aliases)})\n"
         out += "\n".join(msg + fail) + "\n"
         return {"stdout": out, "stderr": "", "code": 0 if not fail else 1}
+
+    def _upload_single(self, sftp, src: Path, remote: str, sudo: bool,
+                        alias: dict, msg: list, fail: list, overwrite: bool = True):
+        """Upload a single script file via SFTP.
+
+        Args:
+            overwrite: if False, skip files that already exist on remote.
+        """
+        try:
+            # Check if file exists and overwrite is False
+            if not overwrite:
+                try:
+                    sftp.stat(remote)
+                    msg.append(f"  = {remote} (skipped, already exists)")
+                    return
+                except Exception:
+                    pass  # File doesn't exist, proceed with upload
+            remote_dir = str(Path(remote).parent)
+            # Handle Windows paths (C:/...) and Unix paths (/...)
+            if "/" in remote_dir:
+                parts = remote_dir.split("/")
+                # Preserve drive letter if present (e.g. C:)
+                start = 1 if parts and len(parts[0]) == 2 and parts[0][1] == ":" else 0
+                for i in range(start + 1, len(parts) + 1):
+                    p = "/".join(parts[:i])
+                    try:
+                        sftp.mkdir(p)
+                    except Exception:
+                        pass
+            if sudo:
+                tmp_prefix = self._cmd("tmp_prefix")
+                tmp_path = f"{tmp_prefix}/.staging_{uuid.uuid4().hex[:8]}_{Path(remote).name}"
+                sftp.put(str(src), tmp_path)
+                mv = self.run(self._cmd("install", tmp=tmp_path, target=remote),
+                              timeout=15, sudo=True)
+                if mv["code"] != 0:
+                    fail.append(f"  x {alias['script']}: sudo install failed: {mv['stderr'][:80]}")
+                    return
+            else:
+                sftp.put(str(src), remote)
+                if self._is_unix():
+                    sftp.chmod(remote, 0o755)
+            msg.append(f"  + {remote}")
+        except Exception as e:
+            fail.append(f"  x {alias['script']}: {e}")
 
     def run_alias(self, name: str) -> dict:
         """Run an alias-defined quick command"""
@@ -368,28 +696,26 @@ class SSHConnection:
 
         # inline type: execute command directly on remote
         if "inline" in target:
-            cmd = target["inline"]
-            if sudo:
-                return self.run_sudo(cmd, timeout=timeout)
-            return self.run(cmd, timeout=timeout)
+            return self.run(target["inline"], timeout=timeout, sudo=sudo)
 
         # script type: upload local .sh first, then execute remotely
-        local_file = Path(target["script"])
+        local_file = (self._scripts_base() / target["script"]).resolve()
         if not local_file.is_file():
             raise FileNotFoundError(f"Script not found: {local_file}")
-        remote_path = f"{self.scripts_dir}/{local_file.name}"
-        cmd = f"bash {remote_path}"
+        if local_file.is_relative_to(self._scripts_base()):
+            rel = local_file.relative_to(self._scripts_base()).as_posix()
+            remote_path = f"{self.scripts_dir}/{rel}"
+        else:
+            remote_path = f"{self.scripts_dir}/external/{local_file.name}"
 
-        # Check if already uploaded (skip re-upload)
-        try:
-            self.run(f"test -f {remote_path}", timeout=5)
-        except Exception:
-            # Not uploaded yet, upload now
-            self.upload_script(str(local_file), script_name=local_file.name, timeout=30)
+        # Check if already uploaded (skip re-upload). Use sudo=sudo so we can stat
+        # files owned by root when the alias targets a root-owned scripts_dir.
+        result = self.run(self._cmd("file_exists", path=remote_path), timeout=5, sudo=sudo)
+        if result["code"] != 0:
+            self.upload_script(str(local_file), script_name=local_file.name,
+                               timeout=30, sudo=sudo)
 
-        if sudo:
-            return self.run_sudo(cmd, timeout=timeout)
-        return self.run(cmd, timeout=timeout)
+        return self.run(self._cmd("run_script", path=remote_path), timeout=timeout, sudo=sudo)
 
     def list_aliases(self) -> list:
         """List all configured aliases"""
@@ -400,10 +726,7 @@ class SSHConnection:
     def close(self):
         """Close the SSH connection"""
         if self._client:
-            try:
-                self._client.close()
-            except Exception:
-                pass
+            self._client.close()
             self._client = None
 
 
@@ -415,7 +738,7 @@ class ConnectionPool:
         self._pool: Dict[str, SSHConnection] = {}
 
     def get(self, server_name: str) -> SSHConnection:
-        """Get or create an SSHConnection (reuses active connection)"""
+        """Get or create an SSHConnection (lazy — call conn.connect() on first use)."""
         key = self._to_key(server_name)
         yml_path = self._resolve_config_path(key)
         data = self._load_config(key)
@@ -424,10 +747,8 @@ class ConnectionPool:
         with self._lock:
             if key in self._pool:
                 conn = self._pool[key]
-                conn.connect()
                 return conn
             conn = SSHConnection(cfg, aliases, yml_path)
-            conn.connect()
             self._pool[key] = conn
             return conn
 
@@ -446,20 +767,35 @@ class ConnectionPool:
         # Handle 'extends' inheritance
         extends = cfg.pop("extends", [])
         if extends:
+            base_cfg = dict(cfg)
+            base_aliases = base_cfg.get("aliases", [])
             for ext_file in extends:
                 ext_path = config_path.parent / ext_file
                 if not ext_path.exists():
                     print(f"Warning: extends file not found: {ext_path}", file=sys.stderr)
                     continue
                 ext_cfg = load_yaml(str(ext_path))
-                # Merge inherited aliases (local takes priority)
+                # Merge server fields: base + local overrides
+                ext_server = ext_cfg.get("server", {})
+                if ext_server:
+                    merged_server = {**ext_server, **base_cfg.get("server", {})}
+                    base_cfg["server"] = merged_server
+                # Merge aliases: local takes priority
                 ext_aliases = ext_cfg.get("aliases", [])
                 if ext_aliases:
-                    existing_names = {a["name"] for a in cfg.get("aliases", [])}
-                    cfg["aliases"] = [
+                    existing_names = {a["name"] for a in base_cfg.get("aliases", [])}
+                    base_cfg["aliases"] = [
                         a for a in ext_aliases if a.get("name") not in existing_names
-                    ] + cfg.get("aliases", [])
-                # Non-aliases fields: use local file values
+                    ] + base_cfg.get("aliases", [])
+                # Merge security fields
+                for key in ["whitelist", "blacklist", "command_template",
+                            "allowed_local_paths", "allowed_remote_paths", "scripts_dir"]:
+                    if key not in base_cfg and key in ext_cfg:
+                        base_cfg[key] = ext_cfg[key]
+                # Merge proxy config
+                if "proxy" in ext_cfg and "proxy" not in base_cfg:
+                    base_cfg["proxy"] = ext_cfg["proxy"]
+            cfg = base_cfg
 
         return cfg
 
@@ -470,16 +806,19 @@ class ConnectionPool:
         servers = []
         for f in sorted(SERVERS_DIR.glob("*.yml")):
             try:
-                cfg = load_yaml(str(f))
+                name = f.stem
+                cfg = self._load_config(name)
                 srv = cfg["server"]
                 info = {
-                    "name": f.stem,
+                    "name": name,
                     "host": srv["host"],
                     "port": srv.get("port", 22),
                     "user": srv["user"],
-                    "display": srv.get("name", f.stem),
+                    "display": srv.get("name", name),
                     "desc": srv.get("desc", ""),
                     "system": srv.get("system", ""),
+                    "group": srv.get("group", name),
+                    "shell": srv.get("shell", "bash"),
                 }
                 aliases = cfg.get("aliases", [])
                 if aliases:
@@ -487,6 +826,9 @@ class ConnectionPool:
                 servers.append(info)
             except Exception as e:
                 servers.append({"name": f.stem, "error": str(e)})
+        servers.sort(key=lambda s: (s.get("group", ""), s.get("name", "")))
+        for i, srv in enumerate(servers, start=1):
+            srv["index"] = i
         return servers
 
     @staticmethod

@@ -21,3 +21,12 @@ server:
   auto_reconnect: true
   # Interval between reconnection attempts (seconds)
   reconnect_interval: 5
+
+# Global command filtering (per-server whitelist/blacklist overrides)
+security:
+  # Regex patterns to block commands (e.g., "rm -rf|mkfs|dd ")
+  blacklist: []
+  # Regex patterns to allow commands (empty = no restriction)
+  whitelist: []
+  # Command template to wrap all commands (use <command> as placeholder)
+  command_template: ""

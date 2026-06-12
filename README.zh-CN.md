@@ -1,157 +1,87 @@
-# 🚀 ssh-alias-mcp — 让你的 AI Agent 直接管理 Linux 服务器
+# ssh-alias-mcp
 
-[English](README.md)
+[English](README.md) | [中文](README.zh-CN.md) | [文档](DOCS.zh-CN.md)
 
-📖 **[详细技术文档 (DOCS.zh-CN.md)](DOCS.zh-CN.md)** — 架构、全部配置项、MCP 工具参考、脚本示例
+AI 驱动的服务器运维工具。YAML 配置服务器，执行命令、部署脚本、管理文件 — AI Agent 和命令行统一接口。
 
+## ✨ 亮点
 
-## 一句话agent安装
+- **一套配置，三种 Shell** — `bash`、`cmd`、`powershell` 通过命令模板自动适配
+- **Alias 系统** — 一行 YAML = 一个 AI 技能，自动暴露为 MCP 工具
+- **MCP + CLI** — 同一套配置、同一个连接池，AI 和人工共用
+
+## 快速开始
+
+```bash
+# AI Agent (MCP)
+claude mcp add ssh-alias-mcp python <路径>/mcp_server.py
+
+# CLI
+python cli.py my-server run "uptime"
+python cli.py my-server alias deploy
+```
+
+## 一句话agent安装（把下面一句话复制给你的Agent）
 
 安装请阅读 https://github.com/leehom0123/ssh-alias-mcp/blob/main/AI_INSTALL.md ，按说明配置好SKILL及安装MCP服务。
 
-## 这是什么？
+## 使用场景
 
-一个不到 2000 行的 Python 小工具，让 Claude Code、Codex CLI、Cursor、Windsurf 等 AI Agent **能 SSH 到你的 Linux 服务器，执行命令、部署代码、查看日志、重启服务**。同时它也是一把好用的 CLI 工具，平时你自己也能用。
-
-**同一套 YAML 配置，同一条连接池，AI 能用，你也能用。**
-
-
-## 我为什么写这个
-
-我日常要做不少开发和运维：部署项目、查日志、排查服务崩溃原因。说实话，很痛苦——每次都要打开终端、SSH 上去、敲命令。一台还好，几台来回切就很烦躁。
-
-AI Agent 火起来之后，我就在想：能不能让 AI 帮我看日志、分析报错、部署应用？但问题是——每次让 AI 做点事，它都要把 SSH 连接信息从头写一遍，token 烧得飞快，看着都心疼。
-
-我先写了个 Python 脚本让 AI 调，能用，但不够痛快。干脆一步到位，做了这个 MCP + CLI 的小工具：**一份 YAML 配好服务器，AI 和命令行都能用，AI 再也不用重复写连接信息。**
-
-开源出来，希望对同样在开发运维一线折腾的朋友有用。
-
-
-## 怎么玩
-
-📥 **安装请阅读 [AI_INSTALL.zh-CN.md](AI_INSTALL.zh-CN.md)，按说明配置 MCP 并添加 `SKILL.md`。** （你也可以把github地址给智能体叫它自己装）
-
-| 工具 | 说明 |
-|------|------|
-| `ssh_list_servers` | 列出所有服务器 |
-| `ssh_run` | 在远程服务器上执行命令 |
-| `ssh_run_sudo` | 以 root 身份执行命令（需配置 `sudo_password`） |
-| `ssh_upload_script` | 上传脚本（可选立即执行） |
-| `ssh_run_script` | 运行已上传的脚本 |
-| `ssh_run_alias` | 执行 alias 快捷命令 |
-| `ssh_alias:{server}:{name}` | **一键 alias，每个 alias 自动生成一个 MCP 工具** |
-
-> ⚠️ **sudo 别拼在 `ssh_run` 里** — 用 `ssh_run_sudo`。docker 权限不够时 alias 里设 `sudo: true`。
-
-### ⌨️ 当 CLI 用
-
-```bash
-python cli.py list-servers                 # 看看有哪些服务器
-python cli.py my-server run "uptime"       # 跑一条命令
-python cli.py my-server sudo "apt update"  # root 执行
-python cli.py my-server alias healthcheck  # 跑一个 alias
-python cli.py my-server upload script.sh -r   # 上传并立即执行
-```
-
-
-## 🎯 核心亮点
-
-### 1. YAML 配置复用 + extends 继承
-
-每台服务器就是一个 YAML 文件。按这个目录结构来：
-
-```
-servers/
-├── _shared/common.yml        # 公共 alias，所有服务器自动继承
-├── prod-web-01.yml           # 生产服务器
-├── prod-web-02.yml           # 另一台生产
-└── staging.yml               # 测试环境
-```
-
-最常用的一些检查和命令，写到 `_shared/common.yml` 里，**所有服务器 `extends` 一下就全有了**：
+### 场景 1：并行部署 5 台服务器
 
 ```yaml
 # _shared/common.yml
 aliases:
-  - name: healthcheck
-    inline: "df -h / && free -h && uptime"
-    desc: "一键健康检查"
-  - name: docker-ps
-    inline: "docker ps --format 'table {{.Names}}\t{{.Status}}'"
-    desc: "查看运行中的容器"
-  - name: logs-nginx
-    inline: "tail -50 /var/log/nginx/error.log"
-    desc: "Nginx 错误日志"
-```
-
-```yaml
-# prod-web-01.yml
-extends:
-  - _shared/common.yml         # 继承公共 alias
-
-server:
-  host: "198.51.100.10"
-  user: "deploy"
-  password: "xxx"
-  sudo_password: "xxx"
-  system: "Ubuntu 22.04 LTS"
-
-aliases:
   - name: deploy
     script: deploy.sh
-    desc: "部署主站"
-    timeout: 600
-    sudo: true
-
-  - name: restart
-    inline: "systemctl restart my-app && echo 'restarted'"
-    desc: "重启应用"
     sudo: true
 ```
 
-5 台、10 台、20 台服务器，维护起来都轻松。**同一套 alias，AI 能用，CLI 也能用。** 你没有写两遍任何东西。
+**AI 工作流：** 你说"部署到所有生产服务器" → AI 读取服务器列表 → 对每台服务器调用 `ssh_run` 或 `ssh_alias` 并行部署 → 汇报结果。无需 SSH 连接信息，无需密码交互。
 
-### 2. Alias 自动变 MCP 工具
+### 场景 2：AI 分析死机原因
 
-YAML 里定义了 `deploy`，AI 那边就直接多出一个 `ssh_alias:prod-web-01:deploy` 工具。**一行 YAML = AI 的一个技能**。对 AI 来说，你的服务器操作就跟本地函数一样，张口就来。
-
-### 3. 一条连接池，AI 和人共用
-
-```
-AI Agent ──→ MCP 协议 ──→ ssh_client.py ──→ 远程服务器
-你的终端 ──→ CLI ────────→ ssh_client.py ──→ 远程服务器
+```yaml
+aliases:
+  - name: crash-check
+    inline: "journalctl -xe --since '1 hour ago' && dmesg -T | tail -100 && free -h && df -h /"
 ```
 
-同一条 SSH 连接、同一个连接池、同一套配置。AI 刚部署完，你终端 `python cli.py` 跑个验证命令，用的是同一个逻辑。不需要两套工具、两套配置。
+**之前：** SSH 进服务器 → 手动查日志 → 搜索内核 panic → 分析 core dump → 几个小时
+**AI 工作流：** 你说"服务器崩了，查原因" → AI 用 `ssh_run` 或 `ssh_alias` 抓取日志 → 分析崩溃原因 → 定位 OOM killer → 给出修复建议
 
-### 4. 连接池 + 代理 + Sudo
+### 场景 3：紧急故障排查
 
-- **连接池**：SSH 连接复用，后台 60 秒保活，不会每敲一条命令就重新登录一次
-- **SOCKS5 代理**：全局或按服务器配代理，代理不通自动走直连，不耽误事
-- **Sudo**：`sudo_password` 配好，一条命令就能跑 root 操作，不用手动交互
-
-
-## 适合谁？
-
-- 🧑‍💻 手头有几台 VPS 跑项目，不想来回 SSH
-- 👥 小团队没有专门运维，想让 AI 分担日常检查
-- 🤖 想让 AI Agent 不止会"聊天"，而是能直接帮你干活
-
-## 技术栈
-
-Python，依赖只有 `paramiko` + `pyyaml` + `pysocks`。不到 2000 行，好读好改。
-
-```bash
-pip install -r requirements.txt
+```yaml
+aliases:
+  - name: check
+    inline: "docker logs --tail 50 my-app && df -h / && free -h"
 ```
 
-## 开源协议 & 反馈
+**之前：** 打开终端 → SSH → 敲命令 → 复制输出 → 分析
+**AI 工作流：** 你说"程序崩了，帮我看看" → AI 用 `ssh_run` 或 `ssh_alias` 获取日志和指标 → 分析崩溃原因 → 给出修复建议
 
-MIT 协议，随便用。Star ⭐ 是对我最大的鼓励。
+### 场景 4：跨平台部署
 
-有问题提 Issue，有想法提 PR，中文也行。
+```yaml
+# Linux 服务器
+server:
+  host: "192.168.1.100"
+  shell: bash
 
-**GitHub: https://github.com/leehom0123/ssh-alias-mcp**
+# Windows 服务器
+server:
+  host: "10.0.0.50"
+  shell: powershell
+```
 
+**AI 工作流：** 你说"部署到 Linux 和 Windows 服务器" → AI 读取服务器配置 → 对每台服务器使用 `ssh_run` 或 `ssh_alias` → 工具自动适配 bash/powershell 命令 → 统一汇报结果
 
-📖 **[详细技术文档 (DOCS.zh-CN.md)](DOCS.zh-CN.md)**
+## 安装
+
+详见 [AI_INSTALL.zh-CN.md](AI_INSTALL.zh-CN.md)。
+
+## 链接
+
+- [完整文档](DOCS.zh-CN.md)
+- [GitHub](https://github.com/leohom0123/ssh-alias-mcp)

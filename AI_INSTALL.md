@@ -6,19 +6,14 @@
 
 Clone directly into your agent's skills directory:
 
-**Claude Code (project-level):**
+**Claude Code:**
 ```bash
-git clone https://github.com/leehom0123/ssh-alias-mcp.git .claude/skills/ssh-manager
-```
-
-**Claude Code (global):**
-```bash
-git clone https://github.com/leehom0123/ssh-alias-mcp.git ~/.claude/skills/ssh-manager
+git clone https://github.com/leehom0123/ssh-alias-mcp.git ~/.claude/skills/ssh-alias-mcp
 ```
 
 **Codex CLI:**
 ```bash
-git clone https://github.com/leehom0123/ssh-alias-mcp.git ~/.codex/skills/ssh-manager
+git clone https://github.com/leehom0123/ssh-alias-mcp.git ~/.codex/skills/ssh-alias-mcp
 ```
 
 Requires: Python ≥ 3.9
@@ -26,7 +21,7 @@ Requires: Python ≥ 3.9
 ## 2. Install Dependencies
 
 ```bash
-pip install -r <skills-dir>/ssh-manager/requirements.txt
+pip install -r <skills-dir>/ssh-alias-mcp/requirements.txt
 ```
 
 Only three dependencies: `paramiko`, `pyyaml`, `pysocks`. Nothing else.
@@ -39,9 +34,9 @@ Add the following entry to your agent's MCP configuration:
 ```json
 {
   "mcpServers": {
-    "server-management": {
+    "ssh-alias-mcp": {
       "command": "python",
-      "args": ["<skills-dir>/ssh-manager/mcp_server.py"]
+      "args": ["<skills-dir>/ssh-alias-mcp/mcp_server.py"]
     }
   }
 }
@@ -51,9 +46,9 @@ Add the following entry to your agent's MCP configuration:
 ```json
 {
   "mcpServers": {
-    "server-management": {
+    "ssh-alias-mcp": {
       "command": "python",
-      "args": ["<skills-dir>/ssh-manager/mcp_server.py"]
+      "args": ["<skills-dir>/ssh-alias-mcp/mcp_server.py"]
     }
   }
 }
@@ -67,7 +62,7 @@ After restarting your AI agent, confirm the MCP tools are loaded:
 
 ```bash
 # Quick CLI check (optional but recommended)
-python <skills-dir>/ssh-manager/cli.py list-servers
+python <skills-dir>/ssh-alias-mcp/cli.py list-servers
 ```
 
 If `servers/` already contains `.yml` configs, the CLI will list them. An empty list is fine too.
@@ -75,11 +70,13 @@ If `servers/` already contains `.yml` configs, the CLI will list them. An empty 
 The following MCP tools should appear in your agent session:
 - `ssh_list_servers`
 - `ssh_run`
-- `ssh_run_sudo`
 - `ssh_upload_script`
 - `ssh_run_script`
 - `ssh_run_alias`
 - `ssh_list_aliases`
+- `ssh_download`
+- `ssh_list_scripts`
+- `ssh_upload_all_scripts`
 - `ssh_alias:{server}:{name}` (one per alias)
 
 ## 5. Add Servers

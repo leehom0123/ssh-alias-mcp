@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""MCP Server - SSH remote server management
+"""MCP Server - ssh-alias-mcp
 
 MCP stdio protocol wrapper around ssh_client.py, providing tool calls for Claude Code.
 
 Usage:
-    claude mcp add server-management python <path-to-this-dir>/mcp_server.py
+    claude mcp add ssh-alias-mcp python <path-to-this-dir>/mcp_server.py
 """
 import io
 import json
@@ -47,23 +47,19 @@ def handle_tools_call(params: dict) -> dict:
         server = args.get("server", "")
         command = args.get("command", "")
         timeout = args.get("timeout", 60)
-        try:
-            conn = pool.get(server)
-            result = conn.run(command, timeout=timeout)
-            return _raw_output(result)
-        except Exception as e:
-            return mcp_text(f"Execution failed: {e}", True)
+        sudo = args.get("sudo", False)
+        conn = pool.get(server)
+        result = conn.run(command, timeout=timeout, sudo=sudo)
+        return _raw_output(result)
 
-    elif name == "ssh_run_sudo":
+    elif name == "ssh_run_script":
         server = args.get("server", "")
-        command = args.get("command", "")
-        timeout = args.get("timeout", 60)
-        try:
-            conn = pool.get(server)
-            result = conn.run_sudo(command, timeout=timeout)
-            return _raw_output(result)
-        except Exception as e:
-            return mcp_text(f"Execution failed: {e}", True)
+        script_name = args.get("script_name", "")
+        timeout = args.get("timeout", 300)
+        sudo = args.get("sudo", False)
+        conn = pool.get(server)
+        result = conn.run_script(script_name, timeout=timeout, sudo=sudo)
+        return _raw_output(result)
 
     elif name == "ssh_upload_script":
         server = args.get("server", "")
@@ -71,32 +67,18 @@ def handle_tools_call(params: dict) -> dict:
         script_name = args.get("script_name", None)
         run_immediately = args.get("run_immediately", False)
         timeout = args.get("timeout", 300)
-        try:
-            conn = pool.get(server)
-            result = conn.upload_script(local_path, script_name, run_immediately, timeout)
-            return _raw_output(result)
-        except Exception as e:
-            return mcp_text(f"Upload failed: {e}", True)
-
-    elif name == "ssh_run_script":
-        server = args.get("server", "")
-        script_name = args.get("script_name", "")
-        timeout = args.get("timeout", 300)
-        try:
-            conn = pool.get(server)
-            result = conn.run_script(script_name, timeout=timeout)
-            return _raw_output(result)
-        except Exception as e:
-            return mcp_text(f"Execution failed: {e}", True)
+        overwrite = args.get("overwrite", True)
+        sudo = args.get("sudo", False)
+        conn = pool.get(server)
+        result = conn.upload_script(local_path, script_name, run_immediately, timeout, overwrite, sudo)
+        return _raw_output(result)
 
     elif name == "ssh_list_scripts":
         server = args.get("server", "")
-        try:
-            conn = pool.get(server)
-            result = conn.list_scripts()
-            return _raw_output(result)
-        except Exception as e:
-            return mcp_text(f"List failed: {e}", True)
+        sudo = args.get("sudo", False)
+        conn = pool.get(server)
+        result = conn.list_scripts(sudo=sudo)
+        return _raw_output(result)
 
     elif name == "ssh_list_servers":
         servers = pool.list_servers()
@@ -108,41 +90,43 @@ def handle_tools_call(params: dict) -> dict:
         if len(parts) != 2:
             return mcp_text(f"Invalid alias tool name: {name}", True)
         server, alias_name = parts
-        try:
-            conn = pool.get(server)
-            result = conn.run_alias(alias_name)
-            return _raw_output(result)
-        except Exception as e:
-            return mcp_text(f"Execution failed: {e}", True)
+        conn = pool.get(server)
+        result = conn.run_alias(alias_name)
+        return _raw_output(result)
+
+    elif name == "ssh_download":
+        server = args.get("server", "")
+        remote_path = args.get("remote_path", "")
+        local_path = args.get("local_path", "")
+        pattern = args.get("pattern", None)
+        timeout = args.get("timeout", 300)
+        overwrite = args.get("overwrite", True)
+        sudo = args.get("sudo", False)
+        conn = pool.get(server)
+        result = conn.download(remote_path, local_path, timeout=timeout,
+                               pattern=pattern, overwrite=overwrite, sudo=sudo)
+        return _raw_output(result)
 
     elif name == "ssh_upload_all_scripts":
         server = args.get("server", "")
-        try:
-            conn = pool.get(server)
-            result = conn.upload_all_scripts()
-            return _raw_output(result)
-        except Exception as e:
-            return mcp_text(f"Upload failed: {e}", True)
+        sudo = args.get("sudo", False)
+        conn = pool.get(server)
+        result = conn.upload_all_scripts(sudo=sudo)
+        return _raw_output(result)
 
     elif name == "ssh_run_alias":
         server = args.get("server", "")
         alias_name = args.get("alias_name", "")
-        try:
-            conn = pool.get(server)
-            result = conn.run_alias(alias_name)
-            return _raw_output(result)
-        except Exception as e:
-            return mcp_text(f"Execution failed: {e}", True)
+        conn = pool.get(server)
+        result = conn.run_alias(alias_name)
+        return _raw_output(result)
 
     elif name == "ssh_list_aliases":
         server = args.get("server", "")
-        try:
-            conn = pool.get(server)
-            aliases = conn.list_aliases()
-            return mcp_text(json.dumps({"count": len(aliases), "aliases": aliases},
-                                        indent=2, ensure_ascii=False))
-        except Exception as e:
-            return mcp_text(f"List failed: {e}", True)
+        conn = pool.get(server)
+        aliases = conn.list_aliases()
+        return mcp_text(json.dumps({"count": len(aliases), "aliases": aliases},
+                                    indent=2, ensure_ascii=False))
 
     return mcp_text(f"Unknown tool: {name}", True)
 
@@ -153,27 +137,14 @@ def _build_tools_list() -> list:
     tools = [
         {
             "name": "ssh_run",
-            "description": "Execute a command on a remote server and wait for completion. Returns stdout, stderr, and exit code.",
+            "description": "Execute a command on a remote server. Set `sudo: true` to run as root (requires sudo_password in server YAML).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "server": {"type": "string", "description": "Server name (yml filename without .yml)"},
                     "command": {"type": "string", "description": "Command to execute"},
                     "timeout": {"type": "number", "description": "Timeout in seconds", "default": 60},
-                },
-                "required": ["server", "command"],
-            },
-            "annotations": {"readOnlyHint": False, "destructiveHint": True},
-        },
-        {
-            "name": "ssh_run_sudo",
-            "description": "Execute a command as root on a remote server. Requires `sudo_password` in server YAML config. Uses `echo password | sudo -S` method.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "server": {"type": "string", "description": "Server name (must have sudo_password configured)"},
-                    "command": {"type": "string", "description": "Command to execute as root"},
-                    "timeout": {"type": "number", "description": "Timeout in seconds", "default": 60},
+                    "sudo": {"type": "boolean", "description": "Run as root via sudo", "default": False},
                 },
                 "required": ["server", "command"],
             },
@@ -181,7 +152,7 @@ def _build_tools_list() -> list:
         },
         {
             "name": "ssh_upload_script",
-            "description": "Upload a local script to the server scripts_dir, optionally run immediately.",
+            "description": "Upload a local script to the server scripts_dir. With sudo=true, stages via /tmp and installs preserving original owner/mode (or matching parent dir for new files).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -190,6 +161,7 @@ def _build_tools_list() -> list:
                     "script_name": {"type": "string", "description": "Optional rename (default: original filename)"},
                     "run_immediately": {"type": "boolean", "description": "Run script immediately (default false)"},
                     "timeout": {"type": "number", "description": "Timeout in seconds, applied only when run_immediately=true", "default": 300},
+                    "sudo": {"type": "boolean", "description": "Install + run as root", "default": False},
                 },
                 "required": ["server", "local_path"],
             },
@@ -204,6 +176,7 @@ def _build_tools_list() -> list:
                     "server": {"type": "string", "description": "Server name"},
                     "script_name": {"type": "string", "description": "Script filename"},
                     "timeout": {"type": "number", "description": "Timeout in seconds", "default": 300},
+                    "sudo": {"type": "boolean", "description": "Run as root", "default": False},
                 },
                 "required": ["server", "script_name"],
             },
@@ -216,6 +189,7 @@ def _build_tools_list() -> list:
                 "type": "object",
                 "properties": {
                     "server": {"type": "string", "description": "Server name"},
+                    "sudo": {"type": "boolean", "description": "List as root (for root-owned scripts_dir)", "default": False},
                 },
                 "required": ["server"],
             },
@@ -228,12 +202,30 @@ def _build_tools_list() -> list:
             "annotations": {"readOnlyHint": True},
         },
         {
+            "name": "ssh_download",
+            "description": "Download a file or directory from the remote server to local path. With sudo=true, stages via /tmp + chown to user, then SFTPs (original file is NEVER modified).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "server": {"type": "string", "description": "Server name"},
+                    "remote_path": {"type": "string", "description": "Remote file or directory path"},
+                    "local_path": {"type": "string", "description": "Local file or directory path"},
+                    "pattern": {"type": "string", "description": "Optional regex pattern to filter filenames (e.g. '.log$' to download only .log files)"},
+                    "timeout": {"type": "number", "description": "Timeout in seconds", "default": 300},
+                    "sudo": {"type": "boolean", "description": "Read root-owned files via sudo stage", "default": False},
+                },
+                "required": ["server", "remote_path", "local_path"],
+            },
+            "annotations": {"readOnlyHint": False, "destructiveHint": False},
+        },
+        {
             "name": "ssh_upload_all_scripts",
             "description": "Upload all scripts from alias definitions by traversing their script paths.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "server": {"type": "string", "description": "Server name"},
+                    "sudo": {"type": "boolean", "description": "Install as root (preserves original owner/mode on overwrite)", "default": False},
                 },
                 "required": ["server"],
             },
@@ -303,7 +295,7 @@ def handle_request(req: dict) -> dict:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {"listChanged": True}},
-                "serverInfo": {"name": "server-management", "version": "1.0.0"},
+                "serverInfo": {"name": "ssh-alias-mcp", "version": "1.0.0"},
             },
         }
 
