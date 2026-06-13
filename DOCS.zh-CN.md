@@ -1,4 +1,4 @@
-# ssh-alias-mcp 技术文档
+﻿# ssh-alias-mcp 技术文档
 
 AI 驱动的服务器运维工具 — 支持 **MCP 模式**（AI Agent 调用）和 **CLI 模式**（人工使用）。所有模式共享同一套连接池、代理逻辑和配置。
 
@@ -48,8 +48,8 @@ aliases:
 
 **AI Agent 看到的效果：**
 ```
-ssh_alias:my-server:deploy       # 一键部署
-ssh_alias:my-server:healthcheck  # 一键健康检查
+ssh_alias.my-server.deploy       # 一键部署
+ssh_alias.my-server.healthcheck  # 一键健康检查
 ```
 
 **人工 CLI 同样可用：**
@@ -86,7 +86,7 @@ claude mcp add ssh-alias-mcp python <本目录路径>/mcp_server.py
 注册后，AI Agent 可自动：
 - 在任意已配置服务器上执行命令（`ssh_run` with `sudo: true`）
 - 上传并执行脚本（`ssh_upload_script`、`ssh_run_script`）
-- 一键调用预定义快捷命令（`ssh_alias:{server}:{name}`）
+- 一键调用预定义快捷命令（`ssh_alias.{server}.{name}`）
 - 下载远程文件（`ssh_download`）
 
 ### 命令行使用（人工）
@@ -125,7 +125,7 @@ python cli.py my-server upload /path/to/script.sh -r   # 上传并立即执行
 ```
 ┌──────────────────────────────────────────────────────┐
 │  AI Agent（Claude Code / Codex / OpenCode / ...）   │
-│  └── MCP 工具调用（ssh_run, ssh_alias:...）         │
+│  └── MCP 工具调用（ssh_run, ssh_alias.*）         │
 └──────────────┬───────────────────────────────────────┘
                │ JSON-RPC over stdio
 ┌──────────────▼───────────────────────────────────────┐
@@ -332,11 +332,19 @@ aliases:
 | `ssh_upload_all_scripts` | 按 alias 定义上传所有脚本 |
 | `ssh_run_alias` | 执行 alias 定义的快捷命令 |
 | `ssh_list_aliases` | 列出服务器 alias |
-| `ssh_alias:{server}:{name}` | **动态生成的一键 alias**（每个 alias 一个工具） |
+| `ssh_alias.{server}.{name}` | **动态生成的一键 alias**（每个 alias 一个工具） |
 
 **设计要点：**
-- Alias 动态暴露为独立 MCP 工具（如 `ssh_alias:my-server:deploy`）
+- Alias 动态暴露为独立 MCP 工具（如 `ssh_alias.my-server.deploy`）
 - 所有路径基于 `__file__` 动态解析，无硬编码
+
+**MCP 协议行为：**
+- stdio 服务端使用 JSON-RPC 2.0，并支持协商 `2025-11-25`、`2025-06-18`、`2025-03-26`、`2024-11-05`。
+- `notifications/initialized` 以及其他 JSON-RPC notification 不返回响应。
+- JSON 解析错误返回 `-32700` 且 `id: null`；非法 request 结构返回 `-32600`。
+- 未知 method 返回 `-32601`；未知工具和非法工具参数返回 `-32602`。
+- SSH 连接失败、远程命令非零退出码等工具执行失败，会作为 MCP 工具结果返回，并设置 `isError: true`。
+- `tools.listChanged` 声明为 `false`；如果预期服务器 YAML 发生变化，客户端应重新请求 `tools/list`。
 
 ### 方式二：命令行（人工）
 
@@ -511,7 +519,7 @@ D:\agents\servers\script.sh → /mnt/d/agents/servers/script.sh
 | | SOCKS5 代理 | 代理优先，失败自动回退直连 | `config.yaml` 代理 / `server.proxy` |
 | | 连接池 | 自动复用，60 秒保活 | 全局 `pool.get(name)` |
 | **命令执行** | `run()` | 执行命令，可选 sudo | `ssh_run` / CLI `run -s` |
-| | `run_alias()` | 执行预定义 alias | `ssh_alias:server:name` / CLI `alias` |
+| | `run_alias()` | 执行预定义 alias | `ssh_alias.server.name` / CLI `alias` |
 | | 命令模板 | 包装所有命令（如自动 cd） | `server.command_template` |
 | | 命令过滤 | 正则白名单/黑名单 | `server.blacklist` / `server.whitelist` |
 | **脚本管理** | `upload_script()` | 上传脚本 | CLI `upload` |
@@ -530,7 +538,7 @@ D:\agents\servers\script.sh → /mnt/d/agents/servers/script.sh
 | | Script alias | 上传 + 执行脚本文件 | `aliases[].script` |
 | | Sudo alias | 以 root 权限执行 | `aliases[].sudo: true` |
 | | 继承 | 通过 `extends` 共享 alias | `extends: [_shared/common.yml]` |
-| **MCP 工具** | 动态工具 | 每个 alias 自动暴露为 `ssh_alias:server:name` | 运行时自动生成 |
+| **MCP 工具** | 动态工具 | 每个 alias 自动暴露为 `ssh_alias.server.name` | 运行时自动生成 |
 | | 工具发现 | `ssh_list_servers` / `ssh_list_aliases` | 静态工具 |
 | | 读写标记 | 工具标记 readOnly/destructive | 自动设置 |
 | **安全** | 命令黑名单 | 正则模式拦截命令 | `server.blacklist` |

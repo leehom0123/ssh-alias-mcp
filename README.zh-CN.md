@@ -1,4 +1,4 @@
-# ssh-alias-mcp
+﻿# ssh-alias-mcp
 
 [English](README.md) | [中文](README.zh-CN.md) | [文档](DOCS.zh-CN.md)
 
@@ -37,7 +37,7 @@ aliases:
     sudo: true
 ```
 
-**AI 工作流：** 你说"部署到所有生产服务器" → AI 读取服务器列表 → 对每台服务器调用 `ssh_run` 或 `ssh_alias` 并行部署 → 汇报结果。无需 SSH 连接信息，无需密码交互。
+**AI 工作流：** 你说"部署到所有生产服务器" → AI 读取服务器列表 → 对每台服务器调用 `ssh_run`、`ssh_run_alias` 或 `ssh_alias.prod-01.deploy` 这类动态 alias 工具并行部署 → 汇报结果。无需 SSH 连接信息，无需密码交互。
 
 ### 场景 2：AI 分析死机原因
 
@@ -48,7 +48,7 @@ aliases:
 ```
 
 **之前：** SSH 进服务器 → 手动查日志 → 搜索内核 panic → 分析 core dump → 几个小时
-**AI 工作流：** 你说"服务器崩了，查原因" → AI 用 `ssh_run` 或 `ssh_alias` 抓取日志 → 分析崩溃原因 → 定位 OOM killer → 给出修复建议
+**AI 工作流：** 你说"服务器崩了，查原因" → AI 用 `ssh_run`、`ssh_run_alias` 或动态 alias 工具抓取日志 → 分析崩溃原因 → 定位 OOM killer → 给出修复建议
 
 ### 场景 3：紧急故障排查
 
@@ -59,7 +59,7 @@ aliases:
 ```
 
 **之前：** 打开终端 → SSH → 敲命令 → 复制输出 → 分析
-**AI 工作流：** 你说"程序崩了，帮我看看" → AI 用 `ssh_run` 或 `ssh_alias` 获取日志和指标 → 分析崩溃原因 → 给出修复建议
+**AI 工作流：** 你说"程序崩了，帮我看看" → AI 用 `ssh_run`、`ssh_run_alias` 或动态 alias 工具获取日志和指标 → 分析崩溃原因 → 给出修复建议
 
 ### 场景 4：跨平台部署
 
@@ -75,7 +75,7 @@ server:
   shell: powershell
 ```
 
-**AI 工作流：** 你说"部署到 Linux 和 Windows 服务器" → AI 读取服务器配置 → 对每台服务器使用 `ssh_run` 或 `ssh_alias` → 工具自动适配 bash/powershell 命令 → 统一汇报结果
+**AI 工作流：** 你说"部署到 Linux 和 Windows 服务器" → AI 读取服务器配置 → 对每台服务器使用 `ssh_run`、`ssh_run_alias` 或动态 alias 工具 → 工具自动适配 bash/powershell 命令 → 统一汇报结果
 
 ## 安装
 

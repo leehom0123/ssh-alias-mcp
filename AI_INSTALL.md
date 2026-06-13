@@ -1,4 +1,4 @@
-# AI Installation Guide
+﻿# AI Installation Guide
 
 > This document is written for AI agents. Follow the steps in order to complete installation.
 
@@ -77,7 +77,7 @@ The following MCP tools should appear in your agent session:
 - `ssh_download`
 - `ssh_list_scripts`
 - `ssh_upload_all_scripts`
-- `ssh_alias:{server}:{name}` (one per alias)
+- `ssh_alias.{server}.{name}` (one per alias, e.g. `ssh_alias.prod-01.deploy`)
 
 ## 5. Add Servers
 

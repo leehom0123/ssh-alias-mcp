@@ -1,4 +1,4 @@
-# AI 安装说明
+﻿# AI 安装说明
 
 > 写给 AI Agent 看的安装指南。你只需要按顺序执行以下步骤即可完成安装。
 
@@ -77,7 +77,7 @@ Agent 会话中应该能看到以下 MCP 工具：
 - `ssh_download`
 - `ssh_list_scripts`
 - `ssh_upload_all_scripts`
-- `ssh_alias:{server}:{name}`（每个 alias 一个）
+- `ssh_alias.{server}.{name}`（每个 alias 一个，如 `ssh_alias.prod-01.deploy`）
 
 ## 5. 添加服务器
 

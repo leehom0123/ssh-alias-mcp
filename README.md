@@ -1,4 +1,4 @@
-# ssh-alias-mcp
+﻿# ssh-alias-mcp
 
 [English](README.md) | [中文](README.zh-CN.md) | [Docs](DOCS.md)
 
@@ -37,7 +37,7 @@ aliases:
     sudo: true
 ```
 
-**AI workflow:** You say "deploy to all prod servers" → AI reads server list → calls `ssh_run` or `ssh_alias` on each server in parallel → reports result. No SSH boilerplate, no password prompts.
+**AI workflow:** You say "deploy to all prod servers" → AI reads server list → calls `ssh_run`, `ssh_run_alias`, or a dynamic alias tool such as `ssh_alias.prod-01.deploy` on each server in parallel → reports result. No SSH boilerplate, no password prompts.
 
 ### Scenario 2: AI analyzes crash cause
 
@@ -48,7 +48,7 @@ aliases:
 ```
 
 **Before:** SSH into server → manually check logs → search for kernel panic → analyze core dump → hours later
-**After:** Tell AI "server crashed, check why" → AI calls `ssh_alias:prod-01:crash-check` → analyzes logs → identifies OOM killer → suggests fix
+**After:** Tell AI "server crashed, check why" → AI calls `ssh_alias.prod-01.crash-check` → analyzes logs → identifies OOM killer → suggests fix
 
 ### Scenario 3: Emergency troubleshooting
 
@@ -59,7 +59,7 @@ aliases:
 ```
 
 **Before:** Open terminal → SSH → type commands → copy output → analyze
-**AI workflow:** You say "my app is slow, check it" → AI uses `ssh_run` or `ssh_alias` to grab logs and metrics → identifies bottleneck → suggests fix
+**AI workflow:** You say "my app is slow, check it" → AI uses `ssh_run`, `ssh_run_alias`, or a dynamic alias tool to grab logs and metrics → identifies bottleneck → suggests fix
 
 ### Scenario 4: Cross-platform deployment
 
@@ -75,7 +75,7 @@ server:
   shell: powershell
 ```
 
-**AI workflow:** You say "deploy to both Linux and Windows servers" → AI reads server configs → uses `ssh_run` or `ssh_alias` on each → tool auto-adapts bash/powershell commands → reports unified result
+**AI workflow:** You say "deploy to both Linux and Windows servers" → AI reads server configs → uses `ssh_run`, `ssh_run_alias`, or dynamic alias tools on each → tool auto-adapts bash/powershell commands → reports unified result
 
 ## Installation
 

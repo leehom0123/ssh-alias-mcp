@@ -1,4 +1,4 @@
----
+﻿---
 name: ssh-alias-mcp
 description: AI-driven server operations via SSH CLI or ssh-alias-mcp MCP. Run commands, deploy, restart services, check logs, and upload scripts. Supports bash, cmd, and powershell.
 
@@ -14,12 +14,13 @@ description: AI-driven server operations via SSH CLI or ssh-alias-mcp MCP. Run c
 | `ssh_run_script` | `server`, `script_name`, `timeout`(default 300s), `sudo`(default false) | Run an uploaded script. Set `sudo: true` to run as root. |
 | `ssh_upload_script` | `server`, `local_path`, `script_name`(optional), `run_immediately`(default false), `timeout`(default 300s), `overwrite`(default true), `sudo`(default false) | Upload a script. With `sudo: true`, stages via /tmp and installs preserving original owner/mode. |
 | `ssh_download` | `server`, `remote_path`, `local_path`, `pattern`(optional regex), `timeout`(default 300s), `sudo`(default false) | Download a file or directory from remote. With `sudo: true`, reads root-owned files via /tmp staging. |
-| `ssh_alias:{server}:{name}` | — (auto-generated) | One-click alias execution |
+| `ssh_alias.{server}.{name}` | — (auto-generated) | One-click alias execution |
 | `ssh_upload_all_scripts` | `server`, `sudo`(default false) | Upload all scripts from alias definitions. With `sudo: true`, installs as root. |
 
 ### Notes
 - **sudo** — Use `ssh_run` with `sudo: true`, do not inline `sudo -S` in `ssh_run`
 - **Docker permissions** — If the user is not in the `docker` group, set `sudo: true` on the alias
+- **Dynamic alias tools** — MCP exposes aliases as `ssh_alias.server.alias`.
 
 ## Shell Support
 

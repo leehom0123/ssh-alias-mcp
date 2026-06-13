@@ -1,4 +1,4 @@
-# ssh-alias-mcp Technical Documentation
+﻿# ssh-alias-mcp Technical Documentation
 
 AI-driven server operations tool over SSH — supports **MCP mode** (AI Agent invocation) and **CLI mode** (manual use). All modes share the same connection pool, proxy logic, and configuration.
 
@@ -48,8 +48,8 @@ aliases:
 
 **What the AI Agent sees:**
 ```
-ssh_alias:my-server:deploy       # One-click deploy
-ssh_alias:my-server:healthcheck  # One-click health check
+ssh_alias.my-server.deploy       # One-click deploy
+ssh_alias.my-server.healthcheck  # One-click health check
 ```
 
 **Same for CLI:**
@@ -86,7 +86,7 @@ claude mcp add ssh-alias-mcp python <this-directory>/mcp_server.py
 After registration, the AI Agent can automatically:
 - Execute commands on any configured server (`ssh_run` with `sudo: true`)
 - Upload and run scripts (`ssh_upload_script`, `ssh_run_script`)
-- Invoke predefined shortcuts (`ssh_alias:{server}:{name}`)
+- Invoke predefined shortcuts (`ssh_alias.{server}.{name}`)
 - Download remote files (`ssh_download`)
 
 ### CLI Usage (Manual)
@@ -125,7 +125,7 @@ python cli.py my-server upload /path/to/script.sh -r   # Upload and run immediat
 ```
 ┌──────────────────────────────────────────────────────┐
 │  AI Agent (Claude Code / Codex / OpenCode / ...)     │
-│  └── MCP tool calls (ssh_run, ssh_alias:...)         │
+│  └── MCP tool calls (ssh_run, ssh_alias.*)         │
 └──────────────┬───────────────────────────────────────┘
                │ JSON-RPC over stdio
 ┌──────────────▼───────────────────────────────────────┐
@@ -332,11 +332,19 @@ After registration, the Agent auto-discovers all servers and alias tools. Server
 | `ssh_upload_all_scripts` | Upload all scripts from alias definitions |
 | `ssh_run_alias` | Execute alias shortcut |
 | `ssh_list_aliases` | List server aliases |
-| `ssh_alias:{server}:{name}` | **Dynamically generated one-click alias** (one tool per alias) |
+| `ssh_alias.{server}.{name}` | **Dynamically generated one-click alias** (one tool per alias) |
 
 **Design notes:**
-- Aliases dynamically exposed as standalone MCP tools (e.g., `ssh_alias:my-server:deploy`)
+- Aliases dynamically exposed as standalone MCP tools (e.g., `ssh_alias.my-server.deploy`)
 - All paths dynamically resolved via `__file__`, no hardcoding
+
+**MCP protocol behavior:**
+- The stdio server speaks JSON-RPC 2.0 and negotiates MCP protocol versions `2025-11-25`, `2025-06-18`, `2025-03-26`, and `2024-11-05`.
+- `notifications/initialized` and other JSON-RPC notifications do not receive responses.
+- Parse errors return JSON-RPC `-32700` with `id: null`; invalid request shapes return `-32600`.
+- Unknown methods return `-32601`; unknown tools and invalid tool arguments return `-32602`.
+- Tool execution failures, such as SSH connection errors or non-zero remote exit codes, are returned as MCP tool results with `isError: true`.
+- `tools.listChanged` is advertised as `false`; clients should refresh `tools/list` when server YAML changes are expected.
 
 ### Mode 2: CLI (Manual)
 
@@ -511,7 +519,7 @@ D:\agents\servers\script.sh → /mnt/d/agents/servers/script.sh
 | | SOCKS5 proxy | Proxy first, auto-fallback to direct | `config.yaml` proxy / `server.proxy` |
 | | Connection pool | Auto-reuse, 60s keepalive | Global `pool.get(name)` |
 | **Command Execution** | `run()` | Execute command, optional sudo | `ssh_run` / CLI `run -s` |
-| | `run_alias()` | Execute predefined alias | `ssh_alias:server:name` / CLI `alias` |
+| | `run_alias()` | Execute predefined alias | `ssh_alias.server.name` / CLI `alias` |
 | | Command template | Wrap all commands (e.g., auto cd) | `server.command_template` |
 | | Command filtering | Regex whitelist/blacklist | `server.blacklist` / `server.whitelist` |
 | **Script Management** | `upload_script()` | Upload script | CLI `upload` |
@@ -530,7 +538,7 @@ D:\agents\servers\script.sh → /mnt/d/agents/servers/script.sh
 | | Script alias | Upload + execute script file | `aliases[].script` |
 | | Sudo alias | Execute with root privileges | `aliases[].sudo: true` |
 | | Inheritance | Share aliases via `extends` | `extends: [_shared/common.yml]` |
-| **MCP Tools** | Dynamic tools | Each alias auto-exposed as `ssh_alias:server:name` | Auto-generated at runtime |
+| **MCP Tools** | Dynamic tools | Each alias auto-exposed as `ssh_alias.server.name` | Auto-generated at runtime |
 | | Tool discovery | `ssh_list_servers` / `ssh_list_aliases` | Static tools |
 | | Read/write markers | Tools marked readOnly/destructive | Auto-set |
 | **Security** | Command blacklist | Regex pattern blocks commands | `server.blacklist` |
