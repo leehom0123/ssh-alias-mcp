@@ -1,6 +1,6 @@
-﻿# ssh-alias-mcp
+# ssh-alias-mcp
 
-[English](README.md) | [中文](README.zh-CN.md) | [文档](DOCS.zh-CN.md)
+[English](README.md) | [中文](README.zh-CN.md) &nbsp;·&nbsp; [SKILL](SKILL.md) &nbsp;·&nbsp; [详细参考](REFERENCE.zh-CN.md) &nbsp;·&nbsp; [CLI](CLI_USAGE.zh-CN.md) &nbsp;·&nbsp; [安装](INSTALL.zh-CN.md)
 
 AI 驱动的服务器运维工具。YAML 配置服务器，执行命令、部署脚本、管理文件 — AI Agent 和命令行统一接口。
 
@@ -21,9 +21,16 @@ python cli.py my-server run "uptime"
 python cli.py my-server alias deploy
 ```
 
-## 一句话agent安装（把下面一句话复制给你的Agent）
+## 文档
 
-安装请阅读 https://github.com/leehom0123/ssh-alias-mcp/blob/main/AI_INSTALL.md ，按说明配置好SKILL及安装MCP服务。
+- [SKILL.md](SKILL.md) — AI Agent 技能定义（MCP 工具、快速参考）
+- [REFERENCE.zh-CN.md](REFERENCE.zh-CN.md) — 服务器配置、别名、安全、文件传输（中文版）
+- [CLI_USAGE.zh-CN.md](CLI_USAGE.zh-CN.md) — CLI 命令参考（中文版）
+- [INSTALL.zh-CN.md](INSTALL.zh-CN.md) — AI Agent 安装指南（中文版）
+
+## 一句话 Agent 安装（把下面这句话复制给你的 Agent）
+
+安装请阅读 [INSTALL.zh-CN.md](INSTALL.zh-CN.md)，按说明配置好 SKILL 及安装 MCP 服务。
 
 ## 使用场景
 
@@ -48,7 +55,7 @@ aliases:
 ```
 
 **之前：** SSH 进服务器 → 手动查日志 → 搜索内核 panic → 分析 core dump → 几个小时
-**AI 工作流：** 你说"服务器崩了，查原因" → AI 用 `ssh_run`、`ssh_run_alias` 或动态 alias 工具抓取日志 → 分析崩溃原因 → 定位 OOM killer → 给出修复建议
+**AI 工作流：** 你说"服务器崩了，查原因" → AI 用 `ssh_alias.prod-01.crash-check` 抓取日志 → 分析崩溃原因 → 定位 OOM killer → 给出修复建议
 
 ### 场景 3：紧急故障排查
 
@@ -77,11 +84,6 @@ server:
 
 **AI 工作流：** 你说"部署到 Linux 和 Windows 服务器" → AI 读取服务器配置 → 对每台服务器使用 `ssh_run`、`ssh_run_alias` 或动态 alias 工具 → 工具自动适配 bash/powershell 命令 → 统一汇报结果
 
-## 安装
-
-详见 [AI_INSTALL.zh-CN.md](AI_INSTALL.zh-CN.md)。
-
 ## 链接
 
-- [完整文档](DOCS.zh-CN.md)
-- [GitHub](https://github.com/leohom0123/ssh-alias-mcp)
+- [GitHub](https://github.com/leehom0123/ssh-alias-mcp)

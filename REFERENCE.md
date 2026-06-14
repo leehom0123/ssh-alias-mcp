@@ -1,130 +1,10 @@
-﻿# ssh-alias-mcp Technical Documentation
-
-AI-driven server operations tool over SSH — supports **MCP mode** (AI Agent invocation) and **CLI mode** (manual use). All modes share the same connection pool, proxy logic, and configuration.
-
-## ✨ Key Features
-
-### One Config, Three Shells
-
-The same YAML configuration automatically adapts to three Shell environments:
-
-| Shell | Use Case | Command Examples |
-|-------|---------|---------|
-| `bash` | Linux/macOS servers | `docker ps`, `systemctl restart` |
-| `cmd` | Windows servers (CMD) | `cmd /c "dir /Q"`, `call deploy.bat` |
-| `powershell` | Windows servers (PowerShell) | `Get-Service`, `Invoke-WebRequest` |
-
-**Just set the `shell` type in YAML, and the tool handles the rest:**
-
-```yaml
-# Linux server
-server:
-  host: "192.168.1.100"
-  shell: bash          # Automatically uses bash command templates
-
-# Windows server
-server:
-  host: "10.0.0.50"
-  shell: powershell    # Automatically uses PowerShell command templates
-```
-
-Internally implemented via a **command template dictionary** — each Shell has its own command set (mkdir, file_exists, run_script, move, etc.), no `if/else` branching in code.
-
-### Alias System: One YAML Line = One AI Skill
-
-Define shortcut commands that automatically expose as MCP tools for AI Agents:
-
-```yaml
-aliases:
-  - name: deploy
-    script: deploy.sh
-    desc: "Deploy application"
-    sudo: true
-
-  - name: healthcheck
-    inline: "docker ps && df -h /"
-    desc: "Health check"
-```
-
-**What the AI Agent sees:**
-```
-ssh_alias.my-server.deploy       # One-click deploy
-ssh_alias.my-server.healthcheck  # One-click health check
-```
-
-**Same for CLI:**
-```bash
-python cli.py my-server alias deploy
-python cli.py my-server alias healthcheck
-```
-
-**Two alias types:**
-- **Inline** — Execute a command directly (for simple operations)
-- **Script** — Upload local script then execute (for complex deployments)
-
-**Inheritance support**: Share aliases via `extends` — maintain one common alias file for 50 servers.
-
-## Quick Start
-
-### AI Agent Usage (MCP Mode)
-
-```bash
-# Claude Code
-claude mcp add ssh-alias-mcp python <this-directory>/mcp_server.py
-
-# OpenCode / Codex CLI — add to mcp.json:
-# {
-#   "mcpServers": {
-#     "ssh-alias-mcp": {
-#       "command": "python",
-#       "args": ["<this-directory>/mcp_server.py"]
-#     }
-#   }
-# }
-```
-
-After registration, the AI Agent can automatically:
-- Execute commands on any configured server (`ssh_run` with `sudo: true`)
-- Upload and run scripts (`ssh_upload_script`, `ssh_run_script`)
-- Invoke predefined shortcuts (`ssh_alias.{server}.{name}`)
-- Download remote files (`ssh_download`)
-
-### CLI Usage (Manual)
-
-```bash
-cd <this-directory>
-python cli.py list-servers
-python cli.py my-server run "uptime"
-python cli.py my-server alias healthcheck
-python cli.py my-server upload /path/to/script.sh -r   # Upload and run immediately
-```
-
-## Directory Structure
-
-```
-├── <skills-dir>/
-│   └── ssh-alias-mcp/         # Core code
-│       ├── SKILL.md           # AI Agent skill definition
-│       ├── cli.py             # CLI entry point
-│       ├── mcp_server.py      # MCP stdio server
-│       ├── ssh_client.py      # Core module (SSH connection, proxy, pool)
-│       ├── config.yaml        # Global config (servers_dir, proxy, timeout)
-│       ├── DOCS.md            # Detailed docs (English, this file)
-│       └── DOCS.zh-CN.md      # Detailed docs (Chinese)
-│
-└── servers/                   # Server config directory (outside skill dir, path in config.yaml)
-    ├── my-server.yml          # Server connection info + alias definitions
-    ├── _shared/common.yml     # Shared aliases (inherited via extends)
-    └── my-server/             # Local shell scripts for this server (.sh)
-```
-
-> Server configs `servers/` are separated from the skill directory for easy management and credential isolation. Path configured via `servers_dir` in `config.yaml` (absolute or relative path supported).
+# REFERENCE — Server Configuration, Aliases, Security & File Transfer
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  AI Agent (Claude Code / Codex / OpenCode / ...)     │
+│  AI Agent (Claude Code / Codex / OpenCode / ...)      │
 │  └── MCP tool calls (ssh_run, ssh_alias.*)         │
 └──────────────┬───────────────────────────────────────┘
                │ JSON-RPC over stdio
@@ -145,9 +25,30 @@ python cli.py my-server upload /path/to/script.sh -r   # Upload and run immediat
 └──────────────────────────────────────────────────────┘
 ```
 
-## Configuration
+## Directory Structure
 
-### Global Configuration (`config.yaml`)
+```
+├── <skills-dir>/
+│   └── ssh-alias-mcp/         # Core code
+│       ├── SKILL.md           # AI Agent skill definition
+│       ├── REFERENCE.md       # Detailed reference (this file)
+│       ├── CLI_USAGE.md       # CLI commands reference
+│       ├── INSTALL.md         # AI Agent installation guide
+│       ├── cli.py             # CLI entry point
+│       ├── mcp_server.py      # MCP stdio server
+│       ├── ssh_client.py      # Core module (SSH connection, proxy, pool)
+│       ├── config.yaml        # Global config (servers_dir, proxy, timeout)
+│       └── requirements.txt   # Python dependencies
+│
+└── servers/                   # Server config directory (path in config.yaml)
+    ├── my-server.yml          # Server connection info + alias definitions
+    ├── _shared/common.yml     # Shared aliases (inherited via extends)
+    └── my-server/             # Local shell scripts for this server (.sh)
+```
+
+> Server configs `servers/` are separated from the skill directory for easy management and credential isolation. Path configured via `servers_dir` in `config.yaml` (absolute or relative path supported).
+
+## Global Configuration (`config.yaml`)
 
 ```yaml
 # servers/ directory path (absolute or relative to this file)
@@ -161,53 +62,18 @@ proxy:
 
 server:
   timeout: 30                 # Default SSH connection timeout (seconds)
+  auto_reconnect: true        # Automatically reconnect on lost connection
+  reconnect_interval: 5       # Interval between reconnection attempts (seconds)
+
+security:
+  blacklist: []               # Regex patterns to block commands
+  whitelist: []               # Regex patterns to allow commands (empty = no restriction)
+  command_template: ""        # Command template to wrap all commands
 ```
 
 Proxy is tried first, auto-fallback to direct connection on failure.
 
-### Shared Alias Inheritance (`extends`)
-
-#### Three-Level Inheritance Chain
-
-```
-config.yaml (global defaults: proxy, timeout)
-    ↓ extends
-_shared/*.yml (shared connection info, shared aliases)
-    ↓ extends
-Server YAML (your server — override + append)
-```
-
-#### Multiple Inheritance
-
-A server YAML can inherit from multiple files — layered configuration composition:
-
-```yaml
-# my-server.yml
-extends:
-  - _shared/conn-base.yml    # ① Shared host, user, scripts_dir
-  - _shared/common.yml       # ② Shared aliases
-
-server:
-  host: "198.51.100.10"      # Override ①'s host
-  port: 22
-  password: "xxx"
-
-aliases:                      # Append — local aliases overlay on inherited
-  - name: deploy
-    script: deploy.sh
-```
-
-#### Merge Rules
-
-| Field | Merge Behavior |
-|-------|----------------|
-| `server` | Shallow merge — local overrides base |
-| `aliases` | All inherited from base. Same `name` overrides, different names append |
-| `security` (whitelist/blacklist/command_template) | Base sets defaults, local inherits. Local overrides if present |
-| `proxy` | Same as security — local falls back to base |
-| `allowed_local_paths` / `allowed_remote_paths` | Same as security — local falls back to base |
-
-### Server Configuration (`{servers_dir}/{name}.yml`)
+## Server Configuration (`{servers_dir}/{name}.yml`)
 
 Create a `.yml` file for each server in the `servers/` directory:
 
@@ -271,6 +137,48 @@ aliases:
     timeout: 10
 ```
 
+## Shared Alias Inheritance (`extends`)
+
+### Three-Level Inheritance Chain
+
+```
+config.yaml (global defaults: proxy, timeout)
+    ↓ extends
+_shared/*.yml (shared connection info, shared aliases)
+    ↓ extends
+Server YAML (your server — override + append)
+```
+
+### Multiple Inheritance
+
+A server YAML can inherit from multiple files — layered configuration composition:
+
+```yaml
+# my-server.yml
+extends:
+  - _shared/conn-base.yml    # ① Shared host, user, scripts_dir
+  - _shared/common.yml       # ② Shared aliases
+
+server:
+  host: "198.51.100.10"      # Override ①'s host
+  port: 22
+  password: "xxx"
+
+aliases:                      # Append — local aliases overlay on inherited
+  - name: deploy
+    script: deploy.sh
+```
+
+### Merge Rules
+
+| Field | Merge Behavior |
+|-------|----------------|
+| `server` | Shallow merge — local overrides base |
+| `aliases` | All inherited from base. Same `name` overrides, different names append |
+| `security` (whitelist/blacklist/command_template) | Base sets defaults, local inherits. Local overrides if present |
+| `proxy` | Same as security — local falls back to base |
+| `allowed_local_paths` / `allowed_remote_paths` | Same as security — local falls back to base |
+
 ## Shell Type Support
 
 ### Three Shell Types
@@ -312,90 +220,6 @@ aliases:
 | Script execution | ✅ | ✅ | ✅ |
 | Directory operations | ✅ | ✅ | ✅ |
 | File upload/download | ✅ | ✅ | ✅ |
-
-## Usage Modes
-
-### Mode 1: AI Agent via MCP (Primary)
-
-After registration, the Agent auto-discovers all servers and alias tools. Servers are discovered via glob `{servers_dir}/*.yml`, and the Agent retrieves host, user, system, alias, etc. directly from the parsed YAML config.
-
-**Available MCP Tools:**
-
-| Tool | Description |
-|------|-------------|
-| `ssh_list_servers` | List all configured servers |
-| `ssh_run` | Execute command on remote server, set `sudo: true` for root |
-| `ssh_upload_script` | Upload local script, optionally run immediately |
-| `ssh_download` | Download file from remote, supports sudo/overwrite |
-| `ssh_run_script` | Run uploaded script |
-| `ssh_list_scripts` | List remote scripts |
-| `ssh_upload_all_scripts` | Upload all scripts from alias definitions |
-| `ssh_run_alias` | Execute alias shortcut |
-| `ssh_list_aliases` | List server aliases |
-| `ssh_alias.{server}.{name}` | **Dynamically generated one-click alias** (one tool per alias) |
-
-**Design notes:**
-- Aliases dynamically exposed as standalone MCP tools (e.g., `ssh_alias.my-server.deploy`)
-- All paths dynamically resolved via `__file__`, no hardcoding
-
-**MCP protocol behavior:**
-- The stdio server speaks JSON-RPC 2.0 and negotiates MCP protocol versions `2025-11-25`, `2025-06-18`, `2025-03-26`, and `2024-11-05`.
-- `notifications/initialized` and other JSON-RPC notifications do not receive responses.
-- Parse errors return JSON-RPC `-32700` with `id: null`; invalid request shapes return `-32600`.
-- Unknown methods return `-32601`; unknown tools and invalid tool arguments return `-32602`.
-- Tool execution failures, such as SSH connection errors or non-zero remote exit codes, are returned as MCP tool results with `isError: true`.
-- `tools.listChanged` is advertised as `false`; clients should refresh `tools/list` when server YAML changes are expected.
-
-### Mode 2: CLI (Manual)
-
-```bash
-cd <this-directory>
-
-# List all servers
-python cli.py list-servers
-
-# Execute command
-python cli.py <server> run "<command>"
-
-# Root execution (requires sudo_password)
-python cli.py <server> run "<command>" -s
-
-# Run uploaded script
-python cli.py <server> run-script <name> [-s]
-
-# Execute alias
-python cli.py <server> alias <name>
-
-# Upload and run script
-python cli.py <server> upload /path/to/script.sh -r/--run [-s]
-
-# Upload all alias scripts
-python cli.py <server> upload-all [-s]
-
-# List remote scripts / aliases
-python cli.py <server> list-scripts [-s]
-python cli.py <server> list-aliases
-
-# Download files
-python cli.py <server> download /remote/path ./local/path [-s]
-```
-
-All commands support `-t` / `--timeout` (seconds, default 300).
-
-### Mode 3: Python Module
-
-```python
-import sys
-sys.path.insert(0, "<this-directory>")
-from ssh_client import pool
-
-conn = pool.get("my-server")
-result = conn.run("ls -la /opt")
-print(result["stdout"])
-
-# Real-time streaming output
-conn.run("long-command", stream_cb=lambda chunk, is_stderr: print(chunk, end=""))
-```
 
 ## Security: Command Filtering + Path Restrictions
 
@@ -512,6 +336,32 @@ Windows paths auto-convert to WSL format (Linux environment):
 D:\agents\servers\script.sh → /mnt/d/agents/servers/script.sh
 ```
 
+## Example Scripts
+
+### Deployment Script
+
+```bash
+#!/usr/bin/env bash
+set -eo pipefail
+cd /opt/my-app
+git pull origin main 2>&1 | tail -5
+npm install && npm run build
+systemctl restart my-app
+echo "Deployment complete"
+```
+
+### Health Check Script
+
+```bash
+#!/usr/bin/env bash
+echo "--- Service Status ---"
+systemctl status my-app --no-pager | head -10
+echo "--- Disk Usage ---"
+df -h /
+echo "--- Memory ---"
+free -h
+```
+
 ## Feature Summary
 
 | Category | Feature | Description | Config / API |
@@ -548,42 +398,3 @@ D:\agents\servers\script.sh → /mnt/d/agents/servers/script.sh
 | | Command whitelist | Only allow matching commands | `server.whitelist` |
 | | Path restrictions | Restrict upload/download paths | `server.allowed_local_paths` / `server.allowed_remote_paths` |
 | | Proxy error log | Proxy failures logged to file | `proxy_error.log` |
-
-## Example Scripts
-
-### Deployment Script
-
-```bash
-#!/usr/bin/env bash
-set -eo pipefail
-cd /opt/my-app
-git pull origin main 2>&1 | tail -5
-npm install && npm run build
-systemctl restart my-app
-echo "Deployment complete"
-```
-
-### Health Check Script
-
-```bash
-#!/usr/bin/env bash
-echo "--- Service Status ---"
-systemctl status my-app --no-pager | head -10
-echo "--- Disk Usage ---"
-df -h /
-echo "--- Memory ---"
-free -h
-```
-
-## Core Features
-
-- **Connection pool**: SSH connection reuse, 60s keepalive
-- **SOCKS5 proxy**: Global or per-server proxy config, auto-fallback to direct on failure
-- **Sudo support**: Execute as root via `sudo_password` — `run()` API with `sudo=True`, CLI `run -s`, alias `sudo: true`
-- **Real-time streaming**: `run()`, `run_script()`, `run_alias()` support `stream_cb` for live output
-- **Dynamic MCP tools**: Aliases auto-exposed as one-click MCP tools for AI Agents
-- **Script management**: Upload, store, and execute remote scripts
-- **Security filtering**: Regex command filtering + path restrictions
-- **File transfer**: SFTP upload and download with path restrictions
-- **Zero hardcoded paths**: All paths dynamically resolved via `Path(__file__).parent`
-- **External config directory**: Server configs separated from skill directory, flexible location via `config.yaml`
