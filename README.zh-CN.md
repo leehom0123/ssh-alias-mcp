@@ -30,7 +30,7 @@ python cli.py my-server alias deploy
 
 ## 一句话 Agent 安装（把下面这句话复制给你的 Agent）
 
-安装请阅读 [INSTALL.zh-CN.md](INSTALL.zh-CN.md)，按说明配置好 SKILL 及安装 MCP 服务。
+安装请阅读 https://github.com/leehom0123/ssh-alias-mcp/blob/main/INSTALL.zh-CN.md，按说明配置好 SKILL 及安装 MCP 服务。
 
 ## 使用场景
 

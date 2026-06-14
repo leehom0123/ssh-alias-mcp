@@ -30,7 +30,7 @@ python cli.py my-server alias deploy
 
 ## Agent Setup in One Sentence (Copy It To Your Agents)
 
-Read [INSTALL.md](INSTALL.md) — set up the SKILL and install the MCP service as described.
+Read https://github.com/leehom0123/ssh-alias-mcp/blob/main/INSTALL.md — set up the SKILL and install the MCP service as described.
 
 ## Real-World Scenarios
 
