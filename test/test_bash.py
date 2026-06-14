@@ -2,6 +2,7 @@
 """Test suite for bash shell servers."""
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from test_common import (
     probe_server_info, get_total,
 )
 
-SERVER = os.environ.get("SSH_TEST_SERVER", "test-server")
+SERVER = os.environ.get("SSH_TEST_SERVER", "test-server").strip()
 TEST_SERVER = SERVER
 
 EXPECTED_ALIASES = {
@@ -601,28 +602,45 @@ def test_sudo_upload_all():
 
 # ── main ──
 def main():
+    # Skip SFTP-related tests for test-local-bash (WSL bash SFTP doesn't work)
+    IS_LOCAL_BASH = SERVER == "test-local-bash"
+    
     tests = [
         test_list_servers,
         test_list_aliases,
         test_run_basic,
         test_run_sudo,
         test_alias_inline,
-        test_alias_script,
+    ]
+    
+    if not IS_LOCAL_BASH:
+        tests.extend([
+            test_alias_script,
+        ])
+    
+    tests.extend([
         test_alias_error,
-        test_upload_cases,
-        test_download_file,
-        test_download_directory,
-        test_download_pattern,
+    ])
+    
+    if not IS_LOCAL_BASH:
+        tests.extend([
+            test_upload_cases,
+            test_download_file,
+            test_download_directory,
+            test_download_pattern,
+            test_upload_all_and_list,
+            test_sudo_upload_preserve_ownership,
+            test_sudo_upload_match_parent,
+            test_sudo_download_no_chown_impact,
+            test_sudo_list_scripts_and_run,
+            test_sudo_upload_all,
+        ])
+    
+    tests.extend([
         test_run_timeout,
         test_run_sudo_timeout,
         test_error_handling,
-        test_upload_all_and_list,
-        test_sudo_upload_preserve_ownership,
-        test_sudo_upload_match_parent,
-        test_sudo_download_no_chown_impact,
-        test_sudo_list_scripts_and_run,
-        test_sudo_upload_all,
-    ]
+    ])
 
     print("=" * 60)
     print("  ssh-alias-mcp CLI Test Suite — bash")
@@ -632,6 +650,7 @@ def main():
 
     _probe()
     _reset_counter()
+    total = get_total()
 
     for t in tests:
         try:

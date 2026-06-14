@@ -970,6 +970,9 @@ def main():
     print("  Probed SSH_USER=$USER SSH_HOME=$HOME ...", flush=True)
     _probe_server_info()
 
+    # IS_UNIX: True when shell is bash (Linux), False for cmd/powershell (Windows)
+    IS_UNIX = (SERVER_SHELL == "bash")
+
     for t in tests:
         try:
             t()

@@ -2,6 +2,7 @@
 """Test suite for powershell shell servers."""
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from test_common import (
     probe_server_info, get_total,
 )
 
-SERVER = os.environ.get("SSH_TEST_SERVER", "local-ssh")
+SERVER = os.environ.get("SSH_TEST_SERVER", "local-ssh").strip()
 TEST_SERVER = SERVER
 
 EXPECTED_ALIASES = {
@@ -234,11 +235,15 @@ def test_download_file():
     _section("8. download — single file")
     c = _get_counter()
 
+    # Get expanded temp path for SFTP
+    out, _, _ = run_cli(SERVER, "run", "$env:TEMP")
+    tmp = out.strip()
+
     run_cli(SERVER, "run",
-            f'Set-Content -Path "$env:TEMP\\test_cli_download_1.txt" -Value "download-test-content-1" -Encoding ASCII')
+            f'Set-Content -Path "{tmp}\\test_cli_download_1.txt" -Value "download-test-content-1" -Encoding ASCII')
     local_file1 = TEST_DIR / "downloaded_file1.txt"
     clean_path(local_file1)
-    out, err, code = run_cli(SERVER, "download", "$env:TEMP\\test_cli_download_1.txt", str(local_file1))
+    out, err, code = run_cli(SERVER, "download", f"{tmp}\\test_cli_download_1.txt", str(local_file1))
     _inc(c, "ok" if code == 0 and ("Downloaded" in out or "downloaded" in out.lower()) else "fail",
          "download single file", f"stdout={out.strip()!r}")
     if local_file1.exists():
@@ -247,10 +252,10 @@ def test_download_file():
         clean_path(local_file1)
 
     run_cli(SERVER, "run",
-            f'Set-Content -Path "$env:TEMP\\test_cli_download_2.txt" -Value "download-test-content-2" -Encoding ASCII')
+            f'Set-Content -Path "{tmp}\\test_cli_download_2.txt" -Value "download-test-content-2" -Encoding ASCII')
     local_file2 = TEST_DIR / "downloaded_file2.txt"
     clean_path(local_file2)
-    out, err, code = run_cli(SERVER, "download", "$env:TEMP\\test_cli_download_2.txt", str(local_file2))
+    out, err, code = run_cli(SERVER, "download", f"{tmp}\\test_cli_download_2.txt", str(local_file2))
     _inc(c, "ok" if code == 0 else "fail",
          "download single file 2", f"stdout={out.strip()!r}")
     if local_file2.exists():
@@ -265,13 +270,17 @@ def test_download_directory():
     _section("9. download — directory recursive")
     c = _get_counter()
 
+    # Get expanded temp path for SFTP
+    out, _, _ = run_cli(SERVER, "run", "$env:TEMP")
+    tmp = out.strip()
+
     run_cli(SERVER, "run",
-            f'New-Item -ItemType Directory -Path "$env:TEMP\\test_dl1\\a\\b" -Force; '
-            f'Set-Content -Path "$env:TEMP\\test_dl1\\a\\file1.log" -Value "file1-content" -Encoding ASCII; '
-            f'Set-Content -Path "$env:TEMP\\test_dl1\\a\\b\\file2.txt" -Value "file2-content" -Encoding ASCII')
+            f'New-Item -ItemType Directory -Path "{tmp}\\test_dl1\\a\\b" -Force; '
+            f'Set-Content -Path "{tmp}\\test_dl1\\a\\file1.log" -Value "file1-content" -Encoding ASCII; '
+            f'Set-Content -Path "{tmp}\\test_dl1\\a\\b\\file2.txt" -Value "file2-content" -Encoding ASCII')
     local_dir1 = TEST_DIR / "downloaded_dir1"
     clean_path(local_dir1)
-    out, err, code = run_cli(SERVER, "download", "$env:TEMP\\test_dl1", str(local_dir1))
+    out, err, code = run_cli(SERVER, "download", f"{tmp}\\test_dl1", str(local_dir1))
     _inc(c, "ok" if code == 0 else "fail",
          "download nested dir 1", f"stdout={out.strip()!r} code={code}")
     if local_dir1.exists():
@@ -282,12 +291,12 @@ def test_download_directory():
         clean_path(local_dir1)
 
     run_cli(SERVER, "run",
-            f'New-Item -ItemType Directory -Path "$env:TEMP\\test_dl2\\x" -Force; '
-            f'Set-Content -Path "$env:TEMP\\test_dl2\\x\\data.csv" -Value "x-content" -Encoding ASCII; '
-            f'Set-Content -Path "$env:TEMP\\test_dl2\\x\\readme.md" -Value "y-content" -Encoding ASCII')
+            f'New-Item -ItemType Directory -Path "{tmp}\\test_dl2\\x" -Force; '
+            f'Set-Content -Path "{tmp}\\test_dl2\\x\\data.csv" -Value "x-content" -Encoding ASCII; '
+            f'Set-Content -Path "{tmp}\\test_dl2\\x\\readme.md" -Value "y-content" -Encoding ASCII')
     local_dir2 = TEST_DIR / "downloaded_dir2"
     clean_path(local_dir2)
-    out, err, code = run_cli(SERVER, "download", "$env:TEMP\\test_dl2", str(local_dir2))
+    out, err, code = run_cli(SERVER, "download", f"{tmp}\\test_dl2", str(local_dir2))
     _inc(c, "ok" if code == 0 else "fail",
          "download nested dir 2", f"stdout={out.strip()!r} code={code}")
     if local_dir2.exists():
@@ -302,15 +311,19 @@ def test_download_pattern():
     _section("10. download — regex pattern filter")
     c = _get_counter()
 
+    # Get expanded temp path for SFTP
+    out, _, _ = run_cli(SERVER, "run", "$env:TEMP")
+    tmp = out.strip()
+
     run_cli(SERVER, "run",
-            f'New-Item -ItemType Directory -Path "$env:TEMP\\test_pat1" -Force; '
-            f'Set-Content -Path "$env:TEMP\\test_pat1\\mix.log" -Value "x" -Encoding ASCII; '
-            f'Set-Content -Path "$env:TEMP\\test_pat1\\mix.txt" -Value "y" -Encoding ASCII; '
-            f'Set-Content -Path "$env:TEMP\\test_pat1\\mix.ps1" -Value "z" -Encoding ASCII')
+            f'New-Item -ItemType Directory -Path "{tmp}\\test_pat1" -Force; '
+            f'Set-Content -Path "{tmp}\\test_pat1\\mix.log" -Value "x" -Encoding ASCII; '
+            f'Set-Content -Path "{tmp}\\test_pat1\\mix.txt" -Value "y" -Encoding ASCII; '
+            f'Set-Content -Path "{tmp}\\test_pat1\\mix.ps1" -Value "z" -Encoding ASCII')
 
     local_dir1 = TEST_DIR / "downloaded_pattern1"
     clean_path(local_dir1)
-    out, err, code = run_cli(SERVER, "download", "$env:TEMP\\test_pat1", str(local_dir1), "-p", "\\.log$")
+    out, err, code = run_cli(SERVER, "download", f"{tmp}\\test_pat1", str(local_dir1), "-p", "\\.log$")
     _inc(c, "ok" if code == 0 else "fail",
          "pattern .log$ download", f"stdout={out.strip()!r}")
     if local_dir1.exists():
@@ -322,7 +335,7 @@ def test_download_pattern():
 
     local_dir2 = TEST_DIR / "downloaded_pattern2"
     clean_path(local_dir2)
-    out, err, code = run_cli(SERVER, "download", "$env:TEMP\\test_pat1", str(local_dir2), "-p", "\\.txt$")
+    out, err, code = run_cli(SERVER, "download", f"{tmp}\\test_pat1", str(local_dir2), "-p", "\\.txt$")
     _inc(c, "ok" if code == 0 else "fail",
          "pattern .txt$ download", f"stdout={out.strip()!r}")
     if local_dir2.exists():
@@ -414,6 +427,7 @@ def main():
 
     _probe()
     _reset_counter()
+    total = {"passed": 0, "failed": 0, "skipped": 0}
 
     for t in tests:
         try:

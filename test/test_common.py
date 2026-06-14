@@ -85,6 +85,7 @@ def clean_path(p):
 
 def probe_server_info(server):
     """Probe server info and return dict with user, home, scripts_dir, shell."""
+    server = server.strip()
     # Get shell from list-servers
     r = subprocess.run(
         CLI + ["list-servers"],
@@ -93,11 +94,21 @@ def probe_server_info(server):
     )
     shell = "bash"
     if r.returncode == 0:
-        data = json.loads(r.stdout)
-        for s in data.get("servers", []):
-            if s.get("name") == server:
-                shell = s.get("shell", "bash")
-                break
+        try:
+            data = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            # cmd 环境下可能有控制字符，尝试清理后解析
+            cleaned = "".join(c for c in r.stdout if ord(c) >= 32 or c in '\n\r\t')
+            try:
+                data = json.loads(cleaned)
+            except json.JSONDecodeError:
+                data = None
+        
+        if data:
+            for s in data.get("servers", []):
+                if s.get("name") == server:
+                    shell = s.get("shell", "bash")
+                    break
 
     r = subprocess.run(
         CLI + [server, "run", "whoami"],

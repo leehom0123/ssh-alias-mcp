@@ -46,14 +46,30 @@ def _normalize_path(raw: str) -> str:
     Converts Windows-style drive paths (e.g. 'D:\\agents\\servers') to WSL
     /mnt/<drive>/... form when running under Linux. No-op elsewhere.
     """
-    if not raw or sys.platform != "linux":
+    if not raw:
         return raw
     s = str(raw).replace("\\", "/")
-    # Match "X:/..." pattern
-    if len(s) >= 2 and s[1] == ":" and s[0].isalpha():
-        drive = s[0].lower()
-        rest = s[2:].lstrip("/")
-        return f"/mnt/{drive}/{rest}"
+    
+    # Convert Windows path to WSL path when running under Linux
+    if sys.platform == "linux":
+        # Match "X:/..." pattern
+        if len(s) >= 2 and s[1] == ":" and s[0].isalpha():
+            drive = s[0].lower()
+            rest = s[2:].lstrip("/")
+            return f"/mnt/{drive}/{rest}"
+        return s
+    
+    # Convert WSL path to Windows path when running under Windows
+    if sys.platform == "win32":
+        # Match "/mnt/X/..." pattern
+        if s.startswith("/mnt/"):
+            parts = s.split("/", 3)
+            if len(parts) >= 4:
+                drive = parts[2].upper()
+                rest = parts[3]
+                return f"{drive}:/{rest}"
+        return s
+    
     return s
 
 
@@ -114,19 +130,19 @@ CMD_TEMPLATES = {
         "tmp_prefix":   "/tmp",
     },
     "cmd": {
-        "mkdir":        'cmd /c "mkdir \\"{path}\\" 2>nul"',
-        "file_exists":  'cmd /c "if exist \\"{path}\\" echo exists"',
-        "run_script":   'cmd /c "call {path}"',
+        "mkdir":        'mkdir "{path}" 2>nul',
+        "file_exists":  'if exist "{path}" echo exists',
+        "run_script":   'call "{path}"',
         "chmod":        "",  # no-op on Windows cmd
         "stat_owner":   "echo n/a",
         "stat_mode":    "echo n/a",
-        "rm_dir":       'cmd /c "rmdir /S /Q \\"{path}\\""',
-        "cp_r":         'cmd /c "xcopy /Y \\"{src}\\" \\"{dst}\\" /E /I"',
-        "move":         'cmd /c "move /y \\"{tmp}\\" \\"{target}\\""',
+        "rm_dir":       'rmdir /S /Q "{path}"',
+        "cp_r":         'xcopy /Y "{src}" "{dst}" /E /I',
+        "move":         'move /y "{tmp}" "{target}"',
         "chown":        "",  # no-op
         "chown_r":      "",  # no-op
         "list_dir":     'dir "{path}" /Q',
-        "install":      'cmd /c "move /y \\"{tmp}\\" \\"{target}\\""',
+        "install":      'move /y "{tmp}" "{target}"',
         "tmp_prefix":   "%TEMP%",
     },
     "powershell": {
@@ -458,14 +474,16 @@ class SSHConnection:
             ).strip("\n")
         return result
 
-    def run(self, cmd: str, timeout: int = 300, sudo: bool = False) -> dict:
+    def run(self, cmd: str, timeout: int = None, sudo: bool = False) -> dict:
         """Execute a remote command, returns {stdout, stderr, code}.
 
         Args:
             cmd: shell command to execute
-            timeout: seconds before giving up
+            timeout: seconds before giving up (defaults to server timeout from YAML)
             sudo: if True, wrap with `echo pwd | sudo -S bash -c '...'`
         """
+        if timeout is None:
+            timeout = self.timeout
         cmd = self._check_command(cmd)
         if sudo:
             cmd = self._wrap_sudo(cmd)

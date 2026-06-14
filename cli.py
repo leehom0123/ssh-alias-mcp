@@ -24,7 +24,7 @@ import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from ssh_client import pool, SSHConnection
+from ssh_client import pool, _normalize_path
 
 HELP = """SSH Client CLI
 
@@ -90,6 +90,28 @@ def _extract_opt(args: list, *flags, default=None):
     return default
 
 
+def _write_result(result: dict) -> int:
+    """Write a standard SSH result and return its exit code."""
+    if result.get("stdout"):
+        sys.stdout.write(result["stdout"])
+    if result.get("stderr"):
+        sys.stderr.write(result["stderr"])
+    return result.get("code", 1)
+
+
+def _write_upload_result(result: dict) -> int:
+    """Write upload output, including optional immediate-run streams."""
+    if result.get("stdout"):
+        sys.stdout.write(result["stdout"])
+    if result.get("run_stdout"):
+        sys.stdout.write(result["run_stdout"])
+    if result.get("stderr"):
+        sys.stderr.write(result["stderr"])
+    if result.get("run_stderr"):
+        sys.stderr.write(result["run_stderr"])
+    return result.get("code", 1)
+
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] == "-h" or sys.argv[1] == "--help":
         print(HELP)
@@ -104,13 +126,13 @@ def main():
         print(json.dumps({"count": len(servers), "servers": servers}, indent=2, ensure_ascii=False))
         return
 
-    # Parse common flags first (mutating `rest`)
-    timeout_str = _extract_opt(rest, "-t", "--timeout")
-    timeout = int(timeout_str) if timeout_str is not None else 300
-    sudo = _extract_flag(rest, "-s", "--sudo")
-
     # Get connection
     conn = pool.get(first)
+
+    # Parse common flags first (mutating `rest`)
+    timeout_str = _extract_opt(rest, "-t", "--timeout")
+    timeout = int(timeout_str) if timeout_str is not None else conn.timeout
+    sudo = _extract_flag(rest, "-s", "--sudo")
 
     # Route command
     cmd = rest[0] if rest else None
@@ -118,53 +140,33 @@ def main():
     if cmd == "run" and len(rest) >= 2:
         command = " ".join(rest[1:])
         result = conn.run(command, timeout=timeout, sudo=sudo)
-        if result["stdout"]:
-            sys.stdout.write(result["stdout"])
-        if result["stderr"]:
-            sys.stderr.write(result["stderr"])
-        sys.exit(result["code"])
+        sys.exit(_write_result(result))
 
     elif cmd == "alias" and len(rest) >= 2:
         # sudo for alias is defined inside the YAML (per-alias `sudo: true`)
         result = conn.run_alias(rest[1])
-        if result["stdout"]:
-            sys.stdout.write(result["stdout"])
-        if result["stderr"]:
-            sys.stderr.write(result["stderr"])
-        sys.exit(result["code"])
+        sys.exit(_write_result(result))
 
     elif cmd == "run-script" and len(rest) >= 2:
         result = conn.run_script(rest[1], timeout=timeout, sudo=sudo)
-        if result["stdout"]:
-            sys.stdout.write(result["stdout"])
-        if result["stderr"]:
-            sys.stderr.write(result["stderr"])
-        sys.exit(result["code"])
+        sys.exit(_write_result(result))
 
     elif cmd == "upload" and len(rest) >= 2:
-        local_script = rest[1]
+        local_script = _normalize_path(rest[1])
         run_immediately = _extract_flag(rest, "-r", "--run")
         name = _extract_opt(rest, "-n", "--name")
         result = conn.upload_script(local_script, script_name=name,
                                      run_immediately=run_immediately,
                                      timeout=timeout, sudo=sudo)
-        print(result["stdout"], end="")
-        if result.get("run_stdout"):
-            print(result["run_stdout"], end="")
-        if result.get("run_stderr"):
-            sys.stderr.write(result["run_stderr"])
-        sys.exit(result["code"])
+        sys.exit(_write_upload_result(result))
 
     elif cmd == "upload-all":
         result = conn.upload_all_scripts(sudo=sudo)
-        print(result["stdout"], end="")
-        sys.exit(result["code"])
+        sys.exit(_write_result(result))
 
     elif cmd == "list-scripts":
         result = conn.list_scripts(sudo=sudo)
-        if result["stdout"]:
-            sys.stdout.write(result["stdout"])
-        sys.exit(result["code"])
+        sys.exit(_write_result(result))
 
     elif cmd == "list-aliases":
         aliases = conn.list_aliases()
@@ -172,16 +174,12 @@ def main():
 
     elif cmd == "download" and len(rest) >= 3:
         remote_path = rest[1]
-        local_path = rest[2]
+        local_path = _normalize_path(rest[2])
         pattern = _extract_opt(rest, "-p", "--pattern")
         overwrite = not _extract_flag(rest, "--no-overwrite")
         result = conn.download(remote_path, local_path, timeout=timeout,
                                pattern=pattern, overwrite=overwrite, sudo=sudo)
-        if result["stdout"]:
-            sys.stdout.write(result["stdout"])
-        if result["stderr"]:
-            sys.stderr.write(result["stderr"])
-        sys.exit(result["code"])
+        sys.exit(_write_result(result))
 
     else:
         print(f"Usage: python cli.py <server> <command>", file=sys.stderr)

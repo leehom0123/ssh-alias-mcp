@@ -7,6 +7,9 @@ import io
 import json
 import re
 import sys
+from dataclasses import dataclass
+from hashlib import sha1
+from typing import Callable, Dict, Tuple
 
 # Force UTF-8 output on Windows. stdout must contain only MCP JSON messages.
 if sys.stdout.encoding != "utf-8":
@@ -35,6 +38,49 @@ MCP_INSTRUCTIONS = (
     "Commands, uploads, downloads, and aliases can modify remote systems."
 )
 TOOL_NAME_MAX_LENGTH = 128
+
+
+@dataclass(frozen=True)
+class ArgSpec:
+    name: str
+    json_type: str
+    description: str
+    required: bool = False
+    default: object = None
+
+    def schema(self) -> dict:
+        data = {"type": self.json_type, "description": self.description}
+        if not self.required and self.default is not None:
+            data["default"] = self.default
+        return data
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    name: str
+    title: str
+    description: str
+    args: Tuple[ArgSpec, ...]
+    annotations: dict
+    handler: Callable[[dict], dict]
+
+    def tool(self) -> dict:
+        input_schema = {
+            "type": "object",
+            "additionalProperties": False,
+        }
+        if self.args:
+            input_schema["properties"] = {arg.name: arg.schema() for arg in self.args}
+            required = [arg.name for arg in self.args if arg.required]
+            if required:
+                input_schema["required"] = required
+        return {
+            "name": self.name,
+            "title": self.title,
+            "description": self.description,
+            "inputSchema": input_schema,
+            "annotations": self.annotations,
+        }
 
 
 class McpProtocolError(Exception):
@@ -72,36 +118,34 @@ def _require_object(value, name: str) -> dict:
     return value
 
 
-def _require_string(args: dict, name: str) -> str:
-    value = args.get(name)
-    if not isinstance(value, str) or not value:
-        raise McpProtocolError(-32602, f"Missing or invalid required string argument: {name}")
-    return value
-
-
-def _optional_string(args: dict, name: str):
-    value = args.get(name)
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise McpProtocolError(-32602, f"Invalid string argument: {name}")
-    return value
-
-
-def _optional_bool(args: dict, name: str, default: bool = False) -> bool:
-    value = args.get(name, default)
-    if not isinstance(value, bool):
-        raise McpProtocolError(-32602, f"Invalid boolean argument: {name}")
-    return value
-
-
-def _optional_number(args: dict, name: str, default):
-    value = args.get(name, default)
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        raise McpProtocolError(-32602, f"Invalid number argument: {name}")
-    if value <= 0:
-        raise McpProtocolError(-32602, f"{name} must be greater than 0")
-    return value
+def _validate_tool_args(args: dict, specs: Tuple[ArgSpec, ...]) -> dict:
+    values = {}
+    for spec in specs:
+        value = args.get(spec.name, spec.default)
+        if spec.required and (value is None or value == ""):
+            raise McpProtocolError(
+                -32602,
+                f"Missing or invalid required {spec.json_type} argument: {spec.name}",
+            )
+        if value is None:
+            values[spec.name] = None
+            continue
+        if spec.json_type == "string" and not isinstance(value, str):
+            raise McpProtocolError(-32602, f"Invalid string argument: {spec.name}")
+        if spec.json_type == "string" and spec.required and not value:
+            raise McpProtocolError(
+                -32602,
+                f"Missing or invalid required string argument: {spec.name}",
+            )
+        if spec.json_type == "boolean" and not isinstance(value, bool):
+            raise McpProtocolError(-32602, f"Invalid boolean argument: {spec.name}")
+        if spec.json_type == "number":
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise McpProtocolError(-32602, f"Invalid number argument: {spec.name}")
+            if value <= 0:
+                raise McpProtocolError(-32602, f"{spec.name} must be greater than 0")
+        values[spec.name] = value
+    return values
 
 
 def _sanitize_tool_part(value: str) -> str:
@@ -113,48 +157,58 @@ def _alias_tool_base(server: str, alias_name: str) -> str:
     return f"ssh_alias.{_sanitize_tool_part(server)}.{_sanitize_tool_part(alias_name)}"
 
 
-def _alias_tool_entries() -> dict:
-    entries = {}
+def _unique_alias_tool_name(server: str, alias_name: str, used: set) -> str:
+    base = _alias_tool_base(server, alias_name)
+    tool_name = base[:TOOL_NAME_MAX_LENGTH]
+    if tool_name not in used:
+        used.add(tool_name)
+        return tool_name
+
+    digest = sha1(f"{server}\0{alias_name}".encode("utf-8")).hexdigest()[:8]
+    suffix = f".{digest}"
+    tool_name = base[:TOOL_NAME_MAX_LENGTH - len(suffix)] + suffix
+    if tool_name not in used:
+        used.add(tool_name)
+        return tool_name
+
+    counter = 2
+    while True:
+        suffix = f".{digest}.{counter}"
+        tool_name = base[:TOOL_NAME_MAX_LENGTH - len(suffix)] + suffix
+        if tool_name not in used:
+            used.add(tool_name)
+            return tool_name
+        counter += 1
+
+
+def _alias_tool_specs() -> Dict[str, ToolSpec]:
+    specs = {}
     used = set()
-    for srv in pool.list_servers():
-        sname = srv.get("name", "")
-        if not sname:
-            continue
-        try:
-            data = pool._load_config(sname)
-            aliases = data.get("aliases", [])
-            for alias in aliases:
-                aname = alias.get("name", "")
-                if not aname:
-                    continue
-                base = _alias_tool_base(sname, aname)
-                tool_name = base[:TOOL_NAME_MAX_LENGTH]
-                suffix = 2
-                while tool_name in used:
-                    suffix_text = f".{suffix}"
-                    tool_name = base[:TOOL_NAME_MAX_LENGTH - len(suffix_text)] + suffix_text
-                    suffix += 1
-                used.add(tool_name)
-                desc = alias.get("desc", "")
-                script = alias.get("script", "") or alias.get("inline", "")
-                script_hint = "(inline)" if "inline" in alias else f"(runs {script})"
-                entries[tool_name] = {
-                    "server": sname,
-                    "alias_name": aname,
-                    "tool": {
-                        "name": tool_name,
-                        "title": f"{sname}: {aname}",
-                        "description": f"[{sname}] {desc} {script_hint}",
-                        "inputSchema": {
-                            "type": "object",
-                            "additionalProperties": False,
-                        },
-                        "annotations": {"readOnlyHint": False, "destructiveHint": True},
-                    },
-                }
-        except Exception:
-            pass
-    return entries
+    for entry in pool.list_alias_entries():
+        server = entry["server"]
+        alias_name = entry["alias_name"]
+        alias = entry["alias"]
+        tool_name = _unique_alias_tool_name(server, alias_name, used)
+        desc = alias.get("desc", "")
+        script = alias.get("script", "") or alias.get("inline", "")
+        script_hint = "(inline)" if "inline" in alias else f"(runs {script})"
+        specs[tool_name] = ToolSpec(
+            name=tool_name,
+            title=f"{server}: {alias_name}",
+            description=f"[{server}] {desc} {script_hint}".strip(),
+            args=(),
+            annotations={"readOnlyHint": False, "destructiveHint": True},
+            handler=_run_alias_handler(server, alias_name),
+        )
+    return specs
+
+
+def _run_alias_handler(server: str, alias_name: str) -> Callable[[dict], dict]:
+    def handler(args: dict) -> dict:
+        conn = pool.get(server)
+        return _raw_output(conn.run_alias(alias_name))
+
+    return handler
 
 
 def _raw_output(result: dict) -> dict:
@@ -169,6 +223,202 @@ def _raw_output(result: dict) -> dict:
     return mcp_text(text, result.get("code", 0) != 0)
 
 
+def _json_text(payload: dict) -> dict:
+    return mcp_text(json.dumps(payload, indent=2, ensure_ascii=False))
+
+
+def _server_conn(args: dict):
+    return pool.get(args["server"])
+
+
+def _handle_ssh_run(args: dict) -> dict:
+    return _raw_output(
+        _server_conn(args).run(
+            args["command"],
+            timeout=args["timeout"],
+            sudo=args["sudo"],
+        )
+    )
+
+
+def _handle_ssh_run_script(args: dict) -> dict:
+    return _raw_output(
+        _server_conn(args).run_script(
+            args["script_name"],
+            timeout=args["timeout"],
+            sudo=args["sudo"],
+        )
+    )
+
+
+def _handle_ssh_upload_script(args: dict) -> dict:
+    return _raw_output(
+        _server_conn(args).upload_script(
+            args["local_path"],
+            args["script_name"],
+            args["run_immediately"],
+            args["timeout"],
+            args["overwrite"],
+            args["sudo"],
+        )
+    )
+
+
+def _handle_ssh_list_scripts(args: dict) -> dict:
+    return _raw_output(_server_conn(args).list_scripts(sudo=args["sudo"]))
+
+
+def _handle_ssh_list_servers(args: dict) -> dict:
+    servers = pool.list_servers()
+    return _json_text({"count": len(servers), "servers": servers})
+
+
+def _handle_ssh_download(args: dict) -> dict:
+    return _raw_output(
+        _server_conn(args).download(
+            args["remote_path"],
+            args["local_path"],
+            timeout=args["timeout"],
+            pattern=args["pattern"],
+            overwrite=args["overwrite"],
+            sudo=args["sudo"],
+        )
+    )
+
+
+def _handle_ssh_upload_all_scripts(args: dict) -> dict:
+    return _raw_output(_server_conn(args).upload_all_scripts(sudo=args["sudo"]))
+
+
+def _handle_ssh_run_alias(args: dict) -> dict:
+    return _raw_output(_server_conn(args).run_alias(args["alias_name"]))
+
+
+def _handle_ssh_list_aliases(args: dict) -> dict:
+    aliases = _server_conn(args).list_aliases()
+    return _json_text({"count": len(aliases), "aliases": aliases})
+
+
+def _arg(name: str, json_type: str, description: str, required: bool = False, default=None) -> ArgSpec:
+    return ArgSpec(name, json_type, description, required, default)
+
+
+SERVER_ARG = _arg("server", "string", "Server name", required=True)
+SUDO_ARG = _arg("sudo", "boolean", "Run as root via sudo", default=False)
+TIMEOUT_300_ARG = _arg("timeout", "number", "Timeout in seconds", default=300)
+
+
+STATIC_TOOLS = {
+    "ssh_run": ToolSpec(
+        name="ssh_run",
+        title="Run SSH Command",
+        description="Execute a command on a remote server. Set sudo=true to run as root.",
+        args=(
+            SERVER_ARG,
+            _arg("command", "string", "Command to execute", required=True),
+            _arg("timeout", "number", "Timeout in seconds", default=60),
+            SUDO_ARG,
+        ),
+        annotations={"readOnlyHint": False, "destructiveHint": True},
+        handler=_handle_ssh_run,
+    ),
+    "ssh_upload_script": ToolSpec(
+        name="ssh_upload_script",
+        title="Upload SSH Script",
+        description="Upload a local script to the server scripts_dir.",
+        args=(
+            SERVER_ARG,
+            _arg("local_path", "string", "Local script path", required=True),
+            _arg("script_name", "string", "Optional rename"),
+            _arg("run_immediately", "boolean", "Run after upload", default=False),
+            TIMEOUT_300_ARG,
+            _arg("overwrite", "boolean", "Overwrite existing script", default=True),
+            SUDO_ARG,
+        ),
+        annotations={"readOnlyHint": False, "destructiveHint": False},
+        handler=_handle_ssh_upload_script,
+    ),
+    "ssh_run_script": ToolSpec(
+        name="ssh_run_script",
+        title="Run SSH Script",
+        description="Execute an uploaded script from scripts_dir.",
+        args=(
+            SERVER_ARG,
+            _arg("script_name", "string", "Script filename", required=True),
+            TIMEOUT_300_ARG,
+            _arg("sudo", "boolean", "Run as root", default=False),
+        ),
+        annotations={"readOnlyHint": False, "destructiveHint": False},
+        handler=_handle_ssh_run_script,
+    ),
+    "ssh_list_scripts": ToolSpec(
+        name="ssh_list_scripts",
+        title="List SSH Scripts",
+        description="List uploaded scripts on the remote server.",
+        args=(SERVER_ARG, _arg("sudo", "boolean", "List as root", default=False)),
+        annotations={"readOnlyHint": True},
+        handler=_handle_ssh_list_scripts,
+    ),
+    "ssh_list_servers": ToolSpec(
+        name="ssh_list_servers",
+        title="List SSH Servers",
+        description="List all available server configurations.",
+        args=(),
+        annotations={"readOnlyHint": True},
+        handler=_handle_ssh_list_servers,
+    ),
+    "ssh_download": ToolSpec(
+        name="ssh_download",
+        title="Download SSH File",
+        description="Download a file or directory from the remote server to a local path.",
+        args=(
+            SERVER_ARG,
+            _arg("remote_path", "string", "Remote file or directory path", required=True),
+            _arg("local_path", "string", "Local file or directory path", required=True),
+            _arg("pattern", "string", "Optional regex filename filter"),
+            TIMEOUT_300_ARG,
+            _arg("overwrite", "boolean", "Overwrite existing local files", default=True),
+            _arg("sudo", "boolean", "Read root-owned files via sudo stage", default=False),
+        ),
+        annotations={"readOnlyHint": False, "destructiveHint": False},
+        handler=_handle_ssh_download,
+    ),
+    "ssh_upload_all_scripts": ToolSpec(
+        name="ssh_upload_all_scripts",
+        title="Upload All SSH Scripts",
+        description="Upload all scripts referenced by alias definitions.",
+        args=(SERVER_ARG, _arg("sudo", "boolean", "Install as root", default=False)),
+        annotations={"readOnlyHint": False, "destructiveHint": False},
+        handler=_handle_ssh_upload_all_scripts,
+    ),
+    "ssh_run_alias": ToolSpec(
+        name="ssh_run_alias",
+        title="Run SSH Alias",
+        description="Run an alias-defined quick command.",
+        args=(
+            SERVER_ARG,
+            _arg("alias_name", "string", "Alias name", required=True),
+        ),
+        annotations={"readOnlyHint": False, "destructiveHint": True},
+        handler=_handle_ssh_run_alias,
+    ),
+    "ssh_list_aliases": ToolSpec(
+        name="ssh_list_aliases",
+        title="List SSH Aliases",
+        description="List quick commands configured for a server.",
+        args=(SERVER_ARG,),
+        annotations={"readOnlyHint": True},
+        handler=_handle_ssh_list_aliases,
+    ),
+}
+
+
+def _tool_specs() -> Dict[str, ToolSpec]:
+    specs = dict(STATIC_TOOLS)
+    specs.update(_alias_tool_specs())
+    return specs
+
+
 def handle_tools_call(params: dict) -> dict:
     params = _require_object(params, "params")
     name = params.get("name")
@@ -176,252 +426,16 @@ def handle_tools_call(params: dict) -> dict:
         raise McpProtocolError(-32602, "Missing or invalid tool name")
     args = _require_object(params.get("arguments", {}), "arguments")
 
-    if name == "ssh_run":
-        server = _require_string(args, "server")
-        command = _require_string(args, "command")
-        timeout = _optional_number(args, "timeout", 60)
-        sudo = _optional_bool(args, "sudo", False)
-        conn = pool.get(server)
-        result = conn.run(
-            command,
-            timeout=timeout,
-            sudo=sudo,
-        )
-        return _raw_output(result)
-
-    if name == "ssh_run_script":
-        server = _require_string(args, "server")
-        script_name = _require_string(args, "script_name")
-        timeout = _optional_number(args, "timeout", 300)
-        sudo = _optional_bool(args, "sudo", False)
-        conn = pool.get(server)
-        result = conn.run_script(
-            script_name,
-            timeout=timeout,
-            sudo=sudo,
-        )
-        return _raw_output(result)
-
-    if name == "ssh_upload_script":
-        server = _require_string(args, "server")
-        local_path = _require_string(args, "local_path")
-        script_name = _optional_string(args, "script_name")
-        run_immediately = _optional_bool(args, "run_immediately", False)
-        timeout = _optional_number(args, "timeout", 300)
-        overwrite = _optional_bool(args, "overwrite", True)
-        sudo = _optional_bool(args, "sudo", False)
-        conn = pool.get(server)
-        result = conn.upload_script(
-            local_path,
-            script_name,
-            run_immediately,
-            timeout,
-            overwrite,
-            sudo,
-        )
-        return _raw_output(result)
-
-    if name == "ssh_list_scripts":
-        server = _require_string(args, "server")
-        sudo = _optional_bool(args, "sudo", False)
-        conn = pool.get(server)
-        result = conn.list_scripts(sudo=sudo)
-        return _raw_output(result)
-
-    if name == "ssh_list_servers":
-        servers = pool.list_servers()
-        return mcp_text(json.dumps({"count": len(servers), "servers": servers}, indent=2, ensure_ascii=False))
-
-    if name == "ssh_download":
-        server = _require_string(args, "server")
-        remote_path = _require_string(args, "remote_path")
-        local_path = _require_string(args, "local_path")
-        timeout = _optional_number(args, "timeout", 300)
-        pattern = _optional_string(args, "pattern")
-        overwrite = _optional_bool(args, "overwrite", True)
-        sudo = _optional_bool(args, "sudo", False)
-        conn = pool.get(server)
-        result = conn.download(
-            remote_path,
-            local_path,
-            timeout=timeout,
-            pattern=pattern,
-            overwrite=overwrite,
-            sudo=sudo,
-        )
-        return _raw_output(result)
-
-    if name == "ssh_upload_all_scripts":
-        server = _require_string(args, "server")
-        sudo = _optional_bool(args, "sudo", False)
-        conn = pool.get(server)
-        result = conn.upload_all_scripts(sudo=sudo)
-        return _raw_output(result)
-
-    if name == "ssh_run_alias":
-        server = _require_string(args, "server")
-        alias_name = _require_string(args, "alias_name")
-        conn = pool.get(server)
-        result = conn.run_alias(alias_name)
-        return _raw_output(result)
-
-    if name == "ssh_list_aliases":
-        conn = pool.get(_require_string(args, "server"))
-        aliases = conn.list_aliases()
-        return mcp_text(json.dumps({"count": len(aliases), "aliases": aliases}, indent=2, ensure_ascii=False))
-
-    alias_entries = _alias_tool_entries()
-    if name in alias_entries:
-        entry = alias_entries[name]
-        conn = pool.get(entry["server"])
-        return _raw_output(conn.run_alias(entry["alias_name"]))
-
-    raise McpProtocolError(-32602, f"Unknown tool: {name}")
+    spec = STATIC_TOOLS.get(name)
+    if spec is None:
+        spec = _alias_tool_specs().get(name)
+    if spec is None:
+        raise McpProtocolError(-32602, f"Unknown tool: {name}")
+    return spec.handler(_validate_tool_args(args, spec.args))
 
 
 def _build_tools_list() -> list:
-    tools = [
-        {
-            "name": "ssh_run",
-            "title": "Run SSH Command",
-            "description": "Execute a command on a remote server. Set sudo=true to run as root.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "server": {"type": "string", "description": "Server name"},
-                    "command": {"type": "string", "description": "Command to execute"},
-                    "timeout": {"type": "number", "description": "Timeout in seconds", "default": 60},
-                    "sudo": {"type": "boolean", "description": "Run as root via sudo", "default": False},
-                },
-                "required": ["server", "command"],
-                "additionalProperties": False,
-            },
-            "annotations": {"readOnlyHint": False, "destructiveHint": True},
-        },
-        {
-            "name": "ssh_upload_script",
-            "title": "Upload SSH Script",
-            "description": "Upload a local script to the server scripts_dir.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "server": {"type": "string", "description": "Server name"},
-                    "local_path": {"type": "string", "description": "Local script path"},
-                    "script_name": {"type": "string", "description": "Optional rename"},
-                    "run_immediately": {"type": "boolean", "description": "Run after upload", "default": False},
-                    "timeout": {"type": "number", "description": "Timeout in seconds", "default": 300},
-                    "overwrite": {"type": "boolean", "description": "Overwrite existing script", "default": True},
-                    "sudo": {"type": "boolean", "description": "Install and run as root", "default": False},
-                },
-                "required": ["server", "local_path"],
-                "additionalProperties": False,
-            },
-            "annotations": {"readOnlyHint": False, "destructiveHint": False},
-        },
-        {
-            "name": "ssh_run_script",
-            "title": "Run SSH Script",
-            "description": "Execute an uploaded script from scripts_dir.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "server": {"type": "string", "description": "Server name"},
-                    "script_name": {"type": "string", "description": "Script filename"},
-                    "timeout": {"type": "number", "description": "Timeout in seconds", "default": 300},
-                    "sudo": {"type": "boolean", "description": "Run as root", "default": False},
-                },
-                "required": ["server", "script_name"],
-                "additionalProperties": False,
-            },
-            "annotations": {"readOnlyHint": False, "destructiveHint": False},
-        },
-        {
-            "name": "ssh_list_scripts",
-            "title": "List SSH Scripts",
-            "description": "List uploaded scripts on the remote server.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "server": {"type": "string", "description": "Server name"},
-                    "sudo": {"type": "boolean", "description": "List as root", "default": False},
-                },
-                "required": ["server"],
-                "additionalProperties": False,
-            },
-            "annotations": {"readOnlyHint": True},
-        },
-        {
-            "name": "ssh_list_servers",
-            "title": "List SSH Servers",
-            "description": "List all available server configurations.",
-            "inputSchema": {"type": "object", "additionalProperties": False},
-            "annotations": {"readOnlyHint": True},
-        },
-        {
-            "name": "ssh_download",
-            "title": "Download SSH File",
-            "description": "Download a file or directory from the remote server to a local path.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "server": {"type": "string", "description": "Server name"},
-                    "remote_path": {"type": "string", "description": "Remote file or directory path"},
-                    "local_path": {"type": "string", "description": "Local file or directory path"},
-                    "pattern": {"type": "string", "description": "Optional regex filename filter"},
-                    "timeout": {"type": "number", "description": "Timeout in seconds", "default": 300},
-                    "overwrite": {"type": "boolean", "description": "Overwrite existing local files", "default": True},
-                    "sudo": {"type": "boolean", "description": "Read root-owned files via sudo stage", "default": False},
-                },
-                "required": ["server", "remote_path", "local_path"],
-                "additionalProperties": False,
-            },
-            "annotations": {"readOnlyHint": False, "destructiveHint": False},
-        },
-        {
-            "name": "ssh_upload_all_scripts",
-            "title": "Upload All SSH Scripts",
-            "description": "Upload all scripts referenced by alias definitions.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "server": {"type": "string", "description": "Server name"},
-                    "sudo": {"type": "boolean", "description": "Install as root", "default": False},
-                },
-                "required": ["server"],
-                "additionalProperties": False,
-            },
-            "annotations": {"readOnlyHint": False, "destructiveHint": False},
-        },
-        {
-            "name": "ssh_run_alias",
-            "title": "Run SSH Alias",
-            "description": "Run an alias-defined quick command.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "server": {"type": "string", "description": "Server name"},
-                    "alias_name": {"type": "string", "description": "Alias name"},
-                },
-                "required": ["server", "alias_name"],
-                "additionalProperties": False,
-            },
-            "annotations": {"readOnlyHint": False, "destructiveHint": True},
-        },
-        {
-            "name": "ssh_list_aliases",
-            "title": "List SSH Aliases",
-            "description": "List quick commands configured for a server.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"server": {"type": "string", "description": "Server name"}},
-                "required": ["server"],
-                "additionalProperties": False,
-            },
-            "annotations": {"readOnlyHint": True},
-        },
-    ]
-    tools.extend(entry["tool"] for entry in _alias_tool_entries().values())
-    return tools
+    return [spec.tool() for spec in _tool_specs().values()]
 
 
 def _negotiate_protocol_version(params: dict) -> str:

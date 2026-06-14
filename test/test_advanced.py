@@ -184,8 +184,8 @@ def test_mcp_initialize():
     _inc("ok" if resp.get("id") == 1 else "fail",
          "initialize echoes id=1",
          f"id={resp.get('id')}")
-    _inc("ok" if resp.get("result", {}).get("protocolVersion") == "2024-11-05" else "fail",
-         "initialize returns correct protocolVersion",
+    _inc("ok" if resp.get("result", {}).get("protocolVersion") == "2025-11-25" else "fail",
+         "initialize returns latest protocolVersion by default",
          f"protocolVersion={resp.get('result', {}).get('protocolVersion')!r}")
     _inc("ok" if resp.get("result", {}).get("serverInfo", {}).get("name") == "ssh-alias-mcp" else "fail",
          "initialize returns serverInfo.name == 'ssh-alias-mcp'",
@@ -259,22 +259,21 @@ def test_mcp_tool_call():
 def test_mcp_errors():
     _section("7. MCP protocol — error handling")
 
-    from mcp_server import handle_request
+    from mcp_server import handle_message
 
-    # Case 1: unknown tool — mcp_text returns content with isError=True, not error field
-    resp = handle_request({
+    # Case 1: unknown tool returns a JSON-RPC invalid params error
+    resp = handle_message({
         "jsonrpc": "2.0",
         "id": 4,
         "method": "tools/call",
         "params": {"name": "nonexistent_tool", "arguments": {}},
     })
-    # mcp_text wraps text in content, sets isError=True; no "error" field
-    _inc("ok" if "Unknown tool: nonexistent_tool" in (resp.get("result", {}).get("content", [{}])[0].get("text", "")) else "fail",
-         "unknown tool returns error message in content",
-         f"content={resp.get('result', {}).get('content')!r}")
+    _inc("ok" if resp.get("error", {}).get("code") == -32602 else "fail",
+         "unknown tool returns -32602",
+         f"resp={resp!r}")
 
     # Case 2: invalid method
-    resp = handle_request({
+    resp = handle_message({
         "jsonrpc": "2.0",
         "id": 5,
         "method": "nonexistent_method",
@@ -284,16 +283,16 @@ def test_mcp_errors():
          "invalid method returns -32601",
          f"code={resp.get('error', {}).get('code')}")
 
-    # Case 3: invalid alias tool name (no second colon)
-    resp = handle_request({
+    # Case 3: old colon-style alias tool name is no longer a valid tool
+    resp = handle_message({
         "jsonrpc": "2.0",
         "id": 6,
         "method": "tools/call",
         "params": {"name": "ssh_alias:foo", "arguments": {}},
     })
-    _inc("ok" if "Invalid alias tool name" in (resp.get("result", {}).get("content", [{}])[0].get("text", "")) else "fail",
-         "ssh_alias:foo (no second colon) returns error",
-         f"text={resp.get('result', {}).get('content', [{}])[0].get('text')!r}")
+    _inc("ok" if "Unknown tool: ssh_alias:foo" in resp.get("error", {}).get("message", "") else "fail",
+         "ssh_alias:foo returns unknown tool",
+         f"resp={resp!r}")
 
 
 # ────────────────────────────────────────────────────────────────────

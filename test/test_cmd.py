@@ -2,6 +2,7 @@
 """Test suite for cmd shell servers."""
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from test_common import (
     probe_server_info, get_total,
 )
 
-SERVER = os.environ.get("SSH_TEST_SERVER", "local-ssh")
+SERVER = os.environ.get("SSH_TEST_SERVER", "local-ssh").strip().strip()
 TEST_SERVER = SERVER
 
 EXPECTED_ALIASES = {
@@ -414,6 +415,7 @@ def main():
 
     _probe()
     _reset_counter()
+    total = {"passed": 0, "failed": 0, "skipped": 0}
 
     for t in tests:
         try:
