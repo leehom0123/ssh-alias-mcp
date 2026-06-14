@@ -392,6 +392,9 @@ from ssh_client import pool
 conn = pool.get("my-server")
 result = conn.run("ls -la /opt")
 print(result["stdout"])
+
+# 实时流式输出
+conn.run("长时间命令", stream_cb=lambda chunk, is_stderr: print(chunk, end=""))
 ```
 
 ## 安全：命令过滤 + 路径限制
@@ -518,8 +521,8 @@ D:\agents\servers\script.sh → /mnt/d/agents/servers/script.sh
 | | 密钥认证 | SSH 密钥登录（可选密码） | `server.key`, `server.key_password` |
 | | SOCKS5 代理 | 代理优先，失败自动回退直连 | `config.yaml` 代理 / `server.proxy` |
 | | 连接池 | 自动复用，60 秒保活 | 全局 `pool.get(name)` |
-| **命令执行** | `run()` | 执行命令，可选 sudo | `ssh_run` / CLI `run -s` |
-| | `run_alias()` | 执行预定义 alias | `ssh_alias.server.name` / CLI `alias` |
+| **命令执行** | `run()` | 执行命令，可选 sudo，支持实时流式输出 | `ssh_run` / CLI `run -s` |
+| | `run_alias()` | 执行预定义 alias（支持流式输出） | `ssh_alias.server.name` / CLI `alias` |
 | | 命令模板 | 包装所有命令（如自动 cd） | `server.command_template` |
 | | 命令过滤 | 正则白名单/黑名单 | `server.blacklist` / `server.whitelist` |
 | **脚本管理** | `upload_script()` | 上传脚本 | CLI `upload` |
@@ -577,6 +580,7 @@ free -h
 - **连接池**：SSH 连接复用，60s 保活
 - **SOCKS5 代理**：支持全局或按服务器配置代理，失败自动回退直连
 - **Sudo 支持**：通过 `sudo_password` 以 root 执行命令 — `run()` API 传 `sudo=True`、CLI `run -s`、alias 中 `sudo: true`
+- **实时流式输出**：`run()`、`run_script()`、`run_alias()` 支持 `stream_cb` 回调，实时输出执行进度
 - **动态 MCP 工具**：Alias 自动暴露为 AI Agent 可一键调用的 MCP 工具
 - **脚本管理**：上传、存储、执行远程脚本
 - **安全过滤**：正则命令过滤 + 路径限制

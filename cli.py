@@ -139,17 +139,26 @@ def main():
 
     if cmd == "run" and len(rest) >= 2:
         command = " ".join(rest[1:])
-        result = conn.run(command, timeout=timeout, sudo=sudo)
-        sys.exit(_write_result(result))
+        result = conn.run(
+            command, timeout=timeout, sudo=sudo,
+            stream_cb=lambda chunk, is_stderr: (
+                sys.stderr.write(chunk) if is_stderr else sys.stdout.write(chunk)
+            ),
+        )
+        sys.exit(result.get("code", 1))
 
     elif cmd == "alias" and len(rest) >= 2:
         # sudo for alias is defined inside the YAML (per-alias `sudo: true`)
-        result = conn.run_alias(rest[1])
-        sys.exit(_write_result(result))
+        result = conn.run_alias(rest[1], stream_cb=lambda chunk, is_stderr: (
+            sys.stderr.write(chunk) if is_stderr else sys.stdout.write(chunk)
+        ))
+        sys.exit(result.get("code", 1))
 
     elif cmd == "run-script" and len(rest) >= 2:
-        result = conn.run_script(rest[1], timeout=timeout, sudo=sudo)
-        sys.exit(_write_result(result))
+        result = conn.run_script(rest[1], timeout=timeout, sudo=sudo, stream_cb=lambda chunk, is_stderr: (
+            sys.stderr.write(chunk) if is_stderr else sys.stdout.write(chunk)
+        ))
+        sys.exit(result.get("code", 1))
 
     elif cmd == "upload" and len(rest) >= 2:
         local_script = _normalize_path(rest[1])

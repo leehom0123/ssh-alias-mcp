@@ -474,13 +474,14 @@ class SSHConnection:
             ).strip("\n")
         return result
 
-    def run(self, cmd: str, timeout: int = None, sudo: bool = False) -> dict:
+    def run(self, cmd: str, timeout: int = None, sudo: bool = False, stream_cb: Any = None) -> dict:
         """Execute a remote command, returns {stdout, stderr, code}.
 
         Args:
             cmd: shell command to execute
             timeout: seconds before giving up (defaults to server timeout from YAML)
             sudo: if True, wrap with `echo pwd | sudo -S bash -c '...'`
+            stream_cb: optional callback(chunk: str, is_stderr: bool) for real-time output
         """
         if timeout is None:
             timeout = self.timeout
@@ -496,17 +497,29 @@ class SSHConnection:
         deadline = time.time() + timeout
         while time.time() < deadline:
             if ch.recv_ready():
-                stdout_data.append(ch.recv(65536))
+                chunk = ch.recv(65536)
+                stdout_data.append(chunk)
+                if stream_cb:
+                    stream_cb(chunk.decode(errors="replace"), False)
             if ch.recv_stderr_ready():
-                stderr_data.append(ch.recv_stderr(65536))
+                chunk = ch.recv_stderr(65536)
+                stderr_data.append(chunk)
+                if stream_cb:
+                    stream_cb(chunk.decode(errors="replace"), True)
             if ch.exit_status_ready() and not ch.recv_ready() and not ch.recv_stderr_ready():
                 break
             time.sleep(0.05)
 
         while ch.recv_ready():
-            stdout_data.append(ch.recv(65536))
+            chunk = ch.recv(65536)
+            stdout_data.append(chunk)
+            if stream_cb:
+                stream_cb(chunk.decode(errors="replace"), False)
         while ch.recv_stderr_ready():
-            stderr_data.append(ch.recv_stderr(65536))
+            chunk = ch.recv_stderr(65536)
+            stderr_data.append(chunk)
+            if stream_cb:
+                stream_cb(chunk.decode(errors="replace"), True)
 
         rc = ch.recv_exit_status() if ch.exit_status_ready() else -1
         ch.close()
@@ -580,17 +593,18 @@ class SSHConnection:
         self.connect()
         return self.run(self._cmd("list_dir", path=self.scripts_dir), timeout=30, sudo=sudo)
 
-    def run_script(self, script_name: str, timeout: int = 300, sudo: bool = False) -> dict:
+    def run_script(self, script_name: str, timeout: int = 300, sudo: bool = False, stream_cb: Any = None) -> dict:
         """Run an already-uploaded script.
 
         Args:
             script_name: file name under scripts_dir
             timeout: command timeout in seconds
             sudo: if True, execute as root (requires sudo_password configured)
+            stream_cb: optional callback(chunk: str, is_stderr: bool) for real-time output
         """
         self.connect()
         remote_path = f"{self.scripts_dir}/{script_name}"
-        return self.run(self._cmd("run_script", path=remote_path), timeout=timeout, sudo=sudo)
+        return self.run(self._cmd("run_script", path=remote_path), timeout=timeout, sudo=sudo, stream_cb=stream_cb)
 
     def _cmd(self, name: str, **kwargs) -> str:
         """Format a command template with the given parameters."""
@@ -700,7 +714,7 @@ class SSHConnection:
         except Exception as e:
             fail.append(f"  x {alias['script']}: {e}")
 
-    def run_alias(self, name: str) -> dict:
+    def run_alias(self, name: str, stream_cb: Any = None) -> dict:
         """Run an alias-defined quick command"""
         target = None
         for a in self.aliases:
@@ -714,7 +728,7 @@ class SSHConnection:
 
         # inline type: execute command directly on remote
         if "inline" in target:
-            return self.run(target["inline"], timeout=timeout, sudo=sudo)
+            return self.run(target["inline"], timeout=timeout, sudo=sudo, stream_cb=stream_cb)
 
         # script type: upload local .sh first, then execute remotely
         local_file = (self._scripts_base() / target["script"]).resolve()
@@ -733,7 +747,7 @@ class SSHConnection:
             self.upload_script(str(local_file), script_name=local_file.name,
                                timeout=30, sudo=sudo)
 
-        return self.run(self._cmd("run_script", path=remote_path), timeout=timeout, sudo=sudo)
+        return self.run(self._cmd("run_script", path=remote_path), timeout=timeout, sudo=sudo, stream_cb=stream_cb)
 
     def list_aliases(self) -> list:
         """List all configured aliases"""

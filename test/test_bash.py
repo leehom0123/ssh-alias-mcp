@@ -421,6 +421,33 @@ def test_error_handling():
 
 
 
+# ── 21. stream output ──
+def test_stream_output():
+    _section("21. stream output — real-time vs buffered")
+    c = _get_counter()
+
+    # Test stream_cb: run with stream callback, verify output is received
+    chunks = []
+    result = run_cli(SERVER, "run", "echo stream-test-ok")
+    # CLI now uses stream_cb, so output should appear in stdout
+    _inc(c, "ok" if "stream-test-ok" in result[0] else "fail",
+         "stream run output contains expected text",
+         f"stdout={result[0].strip()!r}")
+
+    # Test alias with stream output
+    result = run_cli(TEST_SERVER, "alias", "test-echo")
+    _inc(c, "ok" if "test-inline-ok" in result[0] else "fail",
+         "stream alias output contains expected text",
+         f"stdout={result[0].strip()!r}")
+
+    # Test run-script with stream output
+    result = run_cli(TEST_SERVER, "run-script", "test-hello.sh")
+    _inc(c, "ok" if "test-hello-script-ok" in result[0] else "fail",
+         "stream run-script output contains expected text",
+         f"stdout={result[0].strip()!r}")
+
+
+
 # ── 15. upload-all + list-scripts ──
 def test_upload_all_and_list():
     _section("15. upload-all + list-scripts")
@@ -640,6 +667,7 @@ def main():
         test_run_timeout,
         test_run_sudo_timeout,
         test_error_handling,
+        test_stream_output,
     ])
 
     print("=" * 60)

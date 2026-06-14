@@ -21,6 +21,7 @@ description: AI-driven server operations via SSH CLI or ssh-alias-mcp MCP. Run c
 - **sudo** — Use `ssh_run` with `sudo: true`, do not inline `sudo -S` in `ssh_run`
 - **Docker permissions** — If the user is not in the `docker` group, set `sudo: true` on the alias
 - **Dynamic alias tools** — MCP exposes aliases as `ssh_alias.server.alias`.
+- **Live stream output** — If you want to live-stream output, use cli. Look at [SKILL.CLI.md](SKILL.CLI.md) for details.
 
 ## Shell Support
 

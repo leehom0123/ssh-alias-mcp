@@ -392,6 +392,9 @@ from ssh_client import pool
 conn = pool.get("my-server")
 result = conn.run("ls -la /opt")
 print(result["stdout"])
+
+# Real-time streaming output
+conn.run("long-command", stream_cb=lambda chunk, is_stderr: print(chunk, end=""))
 ```
 
 ## Security: Command Filtering + Path Restrictions
@@ -518,8 +521,8 @@ D:\agents\servers\script.sh → /mnt/d/agents/servers/script.sh
 | | Key auth | SSH key login (optional passphrase) | `server.key`, `server.key_password` |
 | | SOCKS5 proxy | Proxy first, auto-fallback to direct | `config.yaml` proxy / `server.proxy` |
 | | Connection pool | Auto-reuse, 60s keepalive | Global `pool.get(name)` |
-| **Command Execution** | `run()` | Execute command, optional sudo | `ssh_run` / CLI `run -s` |
-| | `run_alias()` | Execute predefined alias | `ssh_alias.server.name` / CLI `alias` |
+| **Command Execution** | `run()` | Execute command, optional sudo, real-time streaming | `ssh_run` / CLI `run -s` |
+| | `run_alias()` | Execute predefined alias (streams output) | `ssh_alias.server.name` / CLI `alias` |
 | | Command template | Wrap all commands (e.g., auto cd) | `server.command_template` |
 | | Command filtering | Regex whitelist/blacklist | `server.blacklist` / `server.whitelist` |
 | **Script Management** | `upload_script()` | Upload script | CLI `upload` |
@@ -577,6 +580,7 @@ free -h
 - **Connection pool**: SSH connection reuse, 60s keepalive
 - **SOCKS5 proxy**: Global or per-server proxy config, auto-fallback to direct on failure
 - **Sudo support**: Execute as root via `sudo_password` — `run()` API with `sudo=True`, CLI `run -s`, alias `sudo: true`
+- **Real-time streaming**: `run()`, `run_script()`, `run_alias()` support `stream_cb` for live output
 - **Dynamic MCP tools**: Aliases auto-exposed as one-click MCP tools for AI Agents
 - **Script management**: Upload, store, and execute remote scripts
 - **Security filtering**: Regex command filtering + path restrictions
