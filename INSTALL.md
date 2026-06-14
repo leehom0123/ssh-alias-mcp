@@ -1,4 +1,4 @@
-﻿# AI Installation Guide
+# AI Agent Installation Guide
 
 > This document is written for AI agents. Follow the steps in order to complete installation.
 
@@ -14,6 +14,11 @@ git clone https://github.com/leehom0123/ssh-alias-mcp.git ~/.claude/skills/ssh-a
 **Codex CLI:**
 ```bash
 git clone https://github.com/leehom0123/ssh-alias-mcp.git ~/.codex/skills/ssh-alias-mcp
+```
+
+**OpenCode:**
+```bash
+git clone https://github.com/leehom0123/ssh-alias-mcp.git ~/.opencode/skills/ssh-alias-mcp
 ```
 
 Requires: Python ≥ 3.9
@@ -54,7 +59,7 @@ Add the following entry to your agent's MCP configuration:
 }
 ```
 
-Replace `<skills-dir>` with the actual path. For Claude Code global, it's `~/.claude/skills`. For Codex, `~/.codex/skills`.
+Replace `<skills-dir>` with the actual path. For Claude Code global, it's `~/.claude/skills`. For Codex, `~/.codex/skills`. For OpenCode, `~/.opencode/skills`.
 
 ## 4. Verify
 
@@ -90,7 +95,6 @@ server:
   password: "your-password"
 ```
 
-Full configuration reference: [DOCS.md](DOCS.md)
+Full configuration reference: [REFERENCE.md](REFERENCE.md)
 
-
-Done. Your AI agent can now manage this server via MCP. Defining a few aliases makes the experience much better — see the README for examples.
+Done. Your AI agent can now manage servers via MCP. Defining a few aliases makes the experience much better — see the README for examples.

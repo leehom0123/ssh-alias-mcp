@@ -1,6 +1,6 @@
 ﻿# ssh-alias-mcp
 
-[English](README.md) | [中文](README.zh-CN.md) | [Docs](DOCS.md)
+[English](README.md) | [中文](README.zh-CN.md) &nbsp;·&nbsp; [SKILL](SKILL.md) &nbsp;·&nbsp; [REFERENCE](REFERENCE.md) &nbsp;·&nbsp; [CLI](CLI_USAGE.md) &nbsp;·&nbsp; [INSTALL](INSTALL.md)
 
 AI-driven server operations tool. Configure servers in YAML, execute commands, deploy scripts, and manage files — all through a unified interface for AI Agents and CLI.
 
@@ -21,9 +21,16 @@ python cli.py my-server run "uptime"
 python cli.py my-server alias deploy
 ```
 
+## Documentation
+
+- [SKILL.md](SKILL.md) — AI Agent skill definition (MCP tools, quick reference)
+- [REFERENCE.md](REFERENCE.md) — Server configuration, aliases, security, file transfer
+- [CLI_USAGE.md](CLI_USAGE.md) — CLI commands reference
+- [INSTALL.md](INSTALL.md) — AI Agent installation guide
+
 ## Agent Setup in One Sentence (Copy It To Your Agents)
 
-Read https://github.com/leehom0123/ssh-alias-mcp/blob/main/AI_INSTALL.md — set up the SKILL and install the MCP service as described.
+Read https://github.com/leehom0123/ssh-alias-mcp/blob/main/INSTALL.md — set up the SKILL and install the MCP service as described.
 
 ## Real-World Scenarios
 
@@ -77,9 +84,6 @@ server:
 
 **AI workflow:** You say "deploy to both Linux and Windows servers" → AI reads server configs → uses `ssh_run`, `ssh_run_alias`, or dynamic alias tools on each → tool auto-adapts bash/powershell commands → reports unified result
 
-## Installation
+## Links
 
-See [AI_INSTALL.md](AI_INSTALL.md) for setup instructions.
-
-- [Full Documentation](DOCS.md)
-- [GitHub](https://github.com/leohom0123/ssh-alias-mcp)
+- [GitHub](https://github.com/leehom0123/ssh-alias-mcp)
