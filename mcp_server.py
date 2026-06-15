@@ -184,22 +184,23 @@ def _unique_alias_tool_name(server: str, alias_name: str, used: set) -> str:
 def _alias_tool_specs() -> Dict[str, ToolSpec]:
     specs = {}
     used = set()
-    for entry in pool.list_alias_entries():
-        server = entry["server"]
-        alias_name = entry["alias_name"]
-        alias = entry["alias"]
-        tool_name = _unique_alias_tool_name(server, alias_name, used)
-        desc = alias.get("desc", "")
-        script = alias.get("script", "") or alias.get("inline", "")
-        script_hint = "(inline)" if "inline" in alias else f"(runs {script})"
-        specs[tool_name] = ToolSpec(
-            name=tool_name,
-            title=f"{server}: {alias_name}",
-            description=f"[{server}] {desc} {script_hint}".strip(),
-            args=(),
-            annotations={"readOnlyHint": False, "destructiveHint": True},
-            handler=_run_alias_handler(server, alias_name),
-        )
+    for sv in pool.list_servers():
+        server = sv["name"]
+        conn = pool.get(server)
+        for alias in conn.list_aliases():
+            alias_name = alias["name"]
+            tool_name = _unique_alias_tool_name(server, alias_name, used)
+            desc = alias.get("desc", "")
+            script = alias.get("script", "") or alias.get("inline", "")
+            script_hint = "(inline)" if "inline" in alias else f"(runs {script})"
+            specs[tool_name] = ToolSpec(
+                name=tool_name,
+                title=f"{server}: {alias_name}",
+                description=f"[{server}] {desc} {script_hint}".strip(),
+                args=(),
+                annotations={"readOnlyHint": False, "destructiveHint": True},
+                handler=_run_alias_handler(server, alias_name),
+            )
     return specs
 
 

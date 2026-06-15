@@ -43,6 +43,7 @@ python cli.py <server> alias deploy
 - **Docker permissions** — If the user is not in the `docker` group, set `sudo: true` on the alias
 - **Dynamic alias tools** — MCP exposes aliases as `ssh_alias.{server}.{name}`
 - **Live stream output** — For real-time streaming, use CLI. See [CLI_USAGE.md](CLI_USAGE.md)
+- **Docker build real-time output** — `docker build` uses buildkit JSON output by default. Add `--progress=plain` for real-time output. NEVER pipe to `tail` (e.g. `| tail -5`) as it buffers until command completes. Example: `docker build --progress=plain -t myimage .`
 
 ## Shell Support
 
