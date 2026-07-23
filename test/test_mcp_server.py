@@ -27,6 +27,7 @@ from mcp_server import (
     ArgSpec, ToolSpec, McpProtocolError,
     mcp_result, mcp_text, jsonrpc_error, jsonrpc_result,
     _sanitize_tool_part, _unique_alias_tool_name, _raw_output,
+    _with_execution_summary, _tool_args_summary,
     _require_object, _validate_tool_args, _negotiate_protocol_version,
     handle_request, handle_message,
     SUPPORTED_PROTOCOL_VERSIONS, LATEST_PROTOCOL_VERSION,
@@ -223,6 +224,39 @@ def test_raw_output():
 
 
 # ── 6. Helper functions ──────────────────────────────────────────
+def test_execution_summary_output():
+    _section("5b. execution summary output")
+
+    result = _with_execution_summary(
+        {"stdout": "ok\n", "stderr": "", "code": 0},
+        ["Tool: ssh_run", "Server: demo", "Command: whoami"],
+    )
+    text = result["content"][0]["text"]
+    _inc("ok" if text.startswith("Tool: ssh_run\nServer: demo\nCommand: whoami\n\nok") else "fail",
+         "execution summary is prepended to tool output",
+         f"text={text!r}")
+    _inc("ok" if result.get("isError") is False else "fail",
+         "execution summary preserves success state")
+
+    err = _with_execution_summary(
+        {"stdout": "", "stderr": "nope", "code": 2},
+        ["Tool: ssh_run", "Server: demo", "Command: false"],
+    )
+    err_text = err["content"][0]["text"]
+    _inc("ok" if err.get("isError") and "Command: false" in err_text and "Exited with code 2" in err_text else "fail",
+         "execution summary preserves error output",
+         f"text={err_text!r}")
+
+
+def test_tool_args_summary():
+    _section("5c. tool argument summary")
+
+    text = _tool_args_summary("ssh_run", {"server": "demo", "command": "uname -a"})
+    _inc("ok" if "Tool: ssh_run" in text and '"command": "uname -a"' in text else "fail",
+         "tool argument summary includes concrete args",
+         f"text={text!r}")
+
+
 def test_mcp_helpers():
     _section("6. Helper functions (mcp_result, mcp_text, jsonrpc_*)")
 
@@ -816,6 +850,8 @@ def main():
         test_sanitize_tool_part,
         test_unique_alias_tool_name,
         test_raw_output,
+        test_execution_summary_output,
+        test_tool_args_summary,
         test_mcp_helpers,
         test_require_object,
         test_validate_tool_args,

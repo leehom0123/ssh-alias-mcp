@@ -180,6 +180,7 @@ class SSHConnection:
                                    global_config.get("server", {}).get("timeout", 30)))
         self.scripts_dir = cfg.get("scripts_dir",
                                      f"/home/{cfg.get('user', 'root')}/scripts")
+        self.scripts_local_dir = cfg.get("scripts_local_dir")
         self.shell = cfg.get("shell", "bash")  # "bash", "cmd", "powershell"
         self._tpl = CMD_TEMPLATES[self.shell]
         self.aliases = aliases or []
@@ -615,11 +616,14 @@ class SSHConnection:
 
     def _scripts_base(self) -> Path:
         """Get the base directory for resolving relative script paths.
-        Resolution: yml file's directory.
+        Resolution:
+          1. If scripts_local_dir is set, use {yml_dir}/{scripts_local_dir}
+          2. Otherwise fall back to yml file's directory.
         """
-        if self._yml_path:
-            return Path(self._yml_path).parent.resolve()
-        return Path.cwd()
+        base = Path(self._yml_path).parent.resolve() if self._yml_path else Path.cwd()
+        if self.scripts_local_dir:
+            return (base / self.scripts_local_dir).resolve()
+        return base
 
     def _is_unix(self) -> bool:
         """Check if shell is Unix-like."""
@@ -751,9 +755,21 @@ class SSHConnection:
 
     def list_aliases(self) -> list:
         """List all configured aliases"""
-        return [{"name": a.get("name", ""), "type": "script" if "script" in a else "inline",
-                 "desc": a.get("desc", ""), "timeout": a.get("timeout", 300)}
-                for a in self.aliases]
+        aliases = []
+        for a in self.aliases:
+            item = {
+                "name": a.get("name", ""),
+                "type": "script" if "script" in a else "inline",
+                "desc": a.get("desc", ""),
+                "timeout": a.get("timeout", 300),
+                "sudo": a.get("sudo", False),
+            }
+            if "inline" in a:
+                item["inline"] = a["inline"]
+            if "script" in a:
+                item["script"] = a["script"]
+            aliases.append(item)
+        return aliases
 
     def close(self):
         """Close the SSH connection"""

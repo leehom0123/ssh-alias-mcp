@@ -1,62 +1,60 @@
 ﻿---
 name: ssh-alias-mcp
 description: >
-  AI-driven server operations via SSH. Run commands, deploy scripts, restart services,
-  check logs, upload/download files, and manage aliases across Linux and Windows servers.
-  Supports bash, cmd, and powershell shells. Use when managing servers, deploying code,
-  checking logs, restarting services, uploading scripts, or running SSH commands.
-  Trigger keywords: deploy, restart, check logs, server health, SSH, run on server,
-  upload script, download file, server alias, 部署, 重启, 查看日志, 服务器健康检查.
+  SSH server management CLI. Run remote commands, deploy scripts, restart services,
+  check logs, upload/download files, and manage aliases across Linux (bash) and Windows
+  (cmd/powershell) servers. Use when managing servers, deploying code, checking logs,
+  restarting services, uploading scripts, or running SSH commands. Trigger keywords:
+  deploy, restart, check logs, server health, SSH, run on server, upload script,
+  download file, server alias, 部署, 重启, 查看日志, 服务器健康检查.
 ---
 
-# ssh-alias-mcp
+# ssh-alias-mcp CLI
 
 ## Quick Start
 
 ```bash
-# Install (one-time)
-pip install -r requirements.txt
+# Shortcut (defined in AGENTS.md)
+wslts bash ~/.ssh-cli.sh <server> run "<command>"
+wslts bash ~/.ssh-cli.sh <server> upload <file> -n <name> --overwrite
 
-# CLI usage
-python cli.py list-servers
-python cli.py <server> run "uptime"
-python cli.py <server> alias deploy
+# Full CLI
+python cli.py <server> <subcommand> [args...] [-s] [-t SECS]
 ```
 
-## MCP Tools
+## Commands
 
-| Tool | Parameters | Description |
-|------|------------|-------------|
-| `ssh_list_servers` | — | List all configured servers |
-| `ssh_list_aliases` | `server` | List quick-command aliases |
-| `ssh_list_scripts` | `server`, `sudo`(default false) | List uploaded scripts on remote |
-| `ssh_run` | `server`, `command`, `timeout`(default 60s), `sudo`(default false) | Execute a command |
-| `ssh_run_alias` | `server`, `alias_name` | Run an alias |
-| `ssh_run_script` | `server`, `script_name`, `timeout`(default 300s), `sudo`(default false) | Run an uploaded script |
-| `ssh_upload_script` | `server`, `local_path`, `script_name`(opt), `run_immediately`(default false), `timeout`(default 300s), `overwrite`(default true), `sudo`(default false) | Upload a script |
-| `ssh_download` | `server`, `remote_path`, `local_path`, `pattern`(opt), `timeout`(default 300s), `sudo`(default false) | Download file or directory |
-| `ssh_upload_all_scripts` | `server`, `sudo`(default false) | Upload all scripts from alias definitions |
-| `ssh_alias.{server}.{name}` | — (auto-generated) | One-click alias execution |
+```bash
+python cli.py list-servers                                    # List all servers
+python cli.py <server> run "<cmd>" [-s] [-t sec]             # Run command (real-time stream)
+python cli.py <server> run-script <name> [-s] [-t sec]       # Run uploaded script
+python cli.py <server> alias <name>                           # Run alias (sudo from YAML)
+python cli.py <server> upload <path> [-r] [-s] [-n NAME] [-t sec]  # Upload script
+python cli.py <server> upload-all [-s] [-t sec]              # Upload all alias scripts
+python cli.py <server> download <remote> <local> [-s] [-p REGEX] [-t sec]  # Download file/dir
+python cli.py <server> list-scripts [-s] [-t sec]            # List remote scripts
+python cli.py <server> list-aliases                          # List aliases (no SSH)
+```
 
-### Notes
-- **sudo** — Use `ssh_run` with `sudo: true`, never inline `sudo -S` in commands
-- **Docker permissions** — If the user is not in the `docker` group, set `sudo: true` on the alias
-- **Dynamic alias tools** — MCP exposes aliases as `ssh_alias.{server}.{name}`
-- **Live stream output** — For real-time streaming, use CLI. See [CLI_USAGE.md](CLI_USAGE.md)
-- **Docker build real-time output** — `docker build` uses buildkit JSON output by default. Add `--progress=plain` for real-time output. NEVER pipe to `tail` (e.g. `| tail -5`) as it buffers until command completes. Example: `docker build --progress=plain -t myimage .`
+## Flags
 
-## Shell Support
+| Flag | Description |
+|------|-------------|
+| `-s` / `--sudo` | Run as root (upload: stages via /tmp preserving perms; download: /tmp + chown) |
+| `-t` / `--timeout` | Timeout in seconds (default 300) |
+| `-r` / `--run` | (upload) Execute immediately after upload |
+| `-n` / `--name` | (upload) Custom remote filename |
+| `-p` / `--pattern` | (download) Regex filter for filenames |
 
-Set `shell` in server YAML to auto-adapt commands:
+## Notes
 
-| Shell | Use Case |
-|-------|---------|
-| `bash` | Linux/macOS servers (default) |
-| `cmd` | Windows servers (CMD) |
-| `powershell` | Windows servers (PowerShell) |
+- **sudo** — Use `-s` flag, never inline `sudo -S` in commands
+- **Real-time stream** — `run`/`run-script`/`alias` stream via `stream_cb`, not buffered
+- **Docker build** — Add `--progress=plain` for real-time output. Never `| tail` (blocks until done)
+- **Shell** — Set `shell` in server YAML: `bash` / `cmd` / `powershell`
 
 ## More
 
 - Server config, aliases, security, file transfer → [REFERENCE.md](REFERENCE.md)
-- CLI commands reference → [CLI_USAGE.md](CLI_USAGE.md)
+- Full CLI reference → [CLI_USAGE.md](CLI_USAGE.md)
 - AI Agent installation guide → [INSTALL.md](INSTALL.md)

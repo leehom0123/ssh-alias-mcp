@@ -191,8 +191,10 @@ def _alias_tool_specs() -> Dict[str, ToolSpec]:
             alias_name = alias["name"]
             tool_name = _unique_alias_tool_name(server, alias_name, used)
             desc = alias.get("desc", "")
-            script = alias.get("script", "") or alias.get("inline", "")
-            script_hint = "(inline)" if "inline" in alias else f"(runs {script})"
+            if "inline" in alias:
+                script_hint = f"(runs inline: {alias['inline']})"
+            else:
+                script_hint = f"(runs script: {alias.get('script', '')})"
             specs[tool_name] = ToolSpec(
                 name=tool_name,
                 title=f"{server}: {alias_name}",
@@ -207,9 +209,31 @@ def _alias_tool_specs() -> Dict[str, ToolSpec]:
 def _run_alias_handler(server: str, alias_name: str) -> Callable[[dict], dict]:
     def handler(args: dict) -> dict:
         conn = pool.get(server)
-        return _raw_output(conn.run_alias(alias_name))
+        return _with_execution_summary(
+            conn.run_alias(alias_name),
+            _alias_execution_summary(conn, server, alias_name),
+        )
 
     return handler
+
+
+def _alias_execution_summary(conn, server: str, alias_name: str) -> list:
+    lines = [
+        f"Tool: ssh_alias.{server}.{alias_name}",
+        f"Server: {server}",
+        f"Alias: {alias_name}",
+    ]
+    for alias in getattr(conn, "aliases", []):
+        if alias.get("name") != alias_name:
+            continue
+        if "inline" in alias:
+            lines.append(f"Inline command: {alias['inline']}")
+        if "script" in alias:
+            lines.append(f"Script: {alias['script']}")
+        lines.append(f"Timeout: {alias.get('timeout', 300)}")
+        lines.append(f"Sudo: {alias.get('sudo', False)}")
+        break
+    return lines
 
 
 def _raw_output(result: dict) -> dict:
@@ -224,6 +248,14 @@ def _raw_output(result: dict) -> dict:
     return mcp_text(text, result.get("code", 0) != 0)
 
 
+def _with_execution_summary(result: dict, lines: list) -> dict:
+    output = _raw_output(result)
+    header = "\n".join(lines)
+    text = output["content"][0]["text"]
+    output["content"][0]["text"] = f"{header}\n\n{text}"
+    return output
+
+
 def _json_text(payload: dict) -> dict:
     return mcp_text(json.dumps(payload, indent=2, ensure_ascii=False))
 
@@ -233,27 +265,41 @@ def _server_conn(args: dict):
 
 
 def _handle_ssh_run(args: dict) -> dict:
-    return _raw_output(
+    return _with_execution_summary(
         _server_conn(args).run(
             args["command"],
             timeout=args["timeout"],
             sudo=args["sudo"],
-        )
+        ),
+        [
+            f"Tool: ssh_run",
+            f"Server: {args['server']}",
+            f"Command: {args['command']}",
+            f"Timeout: {args['timeout']}",
+            f"Sudo: {args['sudo']}",
+        ],
     )
 
 
 def _handle_ssh_run_script(args: dict) -> dict:
-    return _raw_output(
+    return _with_execution_summary(
         _server_conn(args).run_script(
             args["script_name"],
             timeout=args["timeout"],
             sudo=args["sudo"],
-        )
+        ),
+        [
+            f"Tool: ssh_run_script",
+            f"Server: {args['server']}",
+            f"Script: {args['script_name']}",
+            f"Timeout: {args['timeout']}",
+            f"Sudo: {args['sudo']}",
+        ],
     )
 
 
 def _handle_ssh_upload_script(args: dict) -> dict:
-    return _raw_output(
+    return _with_execution_summary(
         _server_conn(args).upload_script(
             args["local_path"],
             args["script_name"],
@@ -261,12 +307,29 @@ def _handle_ssh_upload_script(args: dict) -> dict:
             args["timeout"],
             args["overwrite"],
             args["sudo"],
-        )
+        ),
+        [
+            f"Tool: ssh_upload_script",
+            f"Server: {args['server']}",
+            f"Local path: {args['local_path']}",
+            f"Script name: {args['script_name'] or '(same as local filename)'}",
+            f"Run immediately: {args['run_immediately']}",
+            f"Timeout: {args['timeout']}",
+            f"Overwrite: {args['overwrite']}",
+            f"Sudo: {args['sudo']}",
+        ],
     )
 
 
 def _handle_ssh_list_scripts(args: dict) -> dict:
-    return _raw_output(_server_conn(args).list_scripts(sudo=args["sudo"]))
+    return _with_execution_summary(
+        _server_conn(args).list_scripts(sudo=args["sudo"]),
+        [
+            f"Tool: ssh_list_scripts",
+            f"Server: {args['server']}",
+            f"Sudo: {args['sudo']}",
+        ],
+    )
 
 
 def _handle_ssh_list_servers(args: dict) -> dict:
@@ -275,7 +338,7 @@ def _handle_ssh_list_servers(args: dict) -> dict:
 
 
 def _handle_ssh_download(args: dict) -> dict:
-    return _raw_output(
+    return _with_execution_summary(
         _server_conn(args).download(
             args["remote_path"],
             args["local_path"],
@@ -283,21 +346,55 @@ def _handle_ssh_download(args: dict) -> dict:
             pattern=args["pattern"],
             overwrite=args["overwrite"],
             sudo=args["sudo"],
-        )
+        ),
+        [
+            f"Tool: ssh_download",
+            f"Server: {args['server']}",
+            f"Remote path: {args['remote_path']}",
+            f"Local path: {args['local_path']}",
+            f"Pattern: {args['pattern'] or '(none)'}",
+            f"Timeout: {args['timeout']}",
+            f"Overwrite: {args['overwrite']}",
+            f"Sudo: {args['sudo']}",
+        ],
     )
 
 
 def _handle_ssh_upload_all_scripts(args: dict) -> dict:
-    return _raw_output(_server_conn(args).upload_all_scripts(sudo=args["sudo"]))
+    return _with_execution_summary(
+        _server_conn(args).upload_all_scripts(sudo=args["sudo"]),
+        [
+            f"Tool: ssh_upload_all_scripts",
+            f"Server: {args['server']}",
+            f"Sudo: {args['sudo']}",
+        ],
+    )
 
 
 def _handle_ssh_run_alias(args: dict) -> dict:
-    return _raw_output(_server_conn(args).run_alias(args["alias_name"]))
+    conn = _server_conn(args)
+    return _with_execution_summary(
+        conn.run_alias(args["alias_name"]),
+        _alias_execution_summary(conn, args["server"], args["alias_name"]),
+    )
 
 
 def _handle_ssh_list_aliases(args: dict) -> dict:
     aliases = _server_conn(args).list_aliases()
-    return _json_text({"count": len(aliases), "aliases": aliases})
+    return _json_text({
+        "tool": "ssh_list_aliases",
+        "server": args["server"],
+        "count": len(aliases),
+        "aliases": aliases,
+    })
+
+
+def _tool_args_summary(name: str, args: dict) -> str:
+    return "\n".join([
+        f"Tool: {name}",
+        "Arguments:",
+        json.dumps(args, indent=2, ensure_ascii=False),
+    ])
 
 
 def _arg(name: str, json_type: str, description: str, required: bool = False, default=None) -> ArgSpec:
@@ -483,7 +580,10 @@ def handle_request(req: dict):
         except McpProtocolError:
             raise
         except Exception as e:
-            return jsonrpc_result(req_id, mcp_text(str(e), True))
+            name = params.get("name", "")
+            args = _require_object(params.get("arguments", {}), "arguments")
+            text = f"{_tool_args_summary(name, args)}\n\nError: {e}"
+            return jsonrpc_result(req_id, mcp_text(text, True))
 
     raise McpProtocolError(-32601, f"Method not found: {method}")
 
