@@ -7,6 +7,10 @@
 
 ```bash
 python cli.py list-servers                             # 列出所有服务器
+python cli.py create-server <名称> <配置.yml>           # 新建（不会覆盖已有配置）
+python cli.py update-server <名称> <补丁.yml> [--replace] # 合并修改或整份替换
+python cli.py copy-server <源名称> <新名称>              # 复制成新的服务器名称
+python cli.py delete-server <名称>                     # 删除本地服务器配置
 python cli.py <server> run "<command>" [-s] [-t sec]   # 执行命令（-s = sudo，流式输出）
 python cli.py <server> run-script <name> [-s] [-t sec]  # 运行已上传脚本（流式输出）
 python cli.py <server> alias <name>                     # 运行别名（流式输出，sudo 在 YAML 中设置）
@@ -28,6 +32,20 @@ python cli.py <server> list-aliases                      # 列出别名（本地
 - `-r` / `--run` —（上传）上传后立即执行脚本
 - `-p` / `--pattern` PAT —（下载）正则表达式过滤文件名
 - `--no-overwrite` —（下载）跳过已存在的本地文件
+- `--replace` —（update-server）整份替换配置，而不是递归合并补丁
+
+## 管理服务器配置
+
+新建和整份替换使用标准服务器 YAML 文件。修改默认递归合并对象；`aliases`
+等数组会整项替换。服务器名称只允许字母、数字、点、下划线和连字符。
+
+```bash
+python cli.py create-server staging ./staging.yml
+python cli.py update-server staging ./port-patch.yml
+python cli.py update-server staging ./staging.yml --replace
+python cli.py copy-server staging staging-copy
+python cli.py delete-server staging
+```
 
 ## 实时流式输出
 

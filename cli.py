@@ -3,6 +3,10 @@
 
 Usage:
     python cli.py list-servers
+    python cli.py create-server <name> <config.yml>
+    python cli.py update-server <name> <config.yml> [--replace]
+    python cli.py copy-server <source> <new-name>
+    python cli.py delete-server <name>
     python cli.py <server> run "<command>" [-s]      # -s = run as root via sudo
     python cli.py <server> run-script <name> [-s]    # run uploaded script (optional sudo)
     python cli.py <server> alias <name>              # sudo is part of the alias YAML config
@@ -24,16 +28,24 @@ import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from ssh_client import pool, _normalize_path
+from ssh_client import pool, _normalize_path, load_yaml
 
 HELP = """SSH Client CLI
 
 Usage:
     python cli.py list-servers
+    python cli.py create-server <name> <config.yml>
+    python cli.py update-server <name> <config.yml> [--replace]
+    python cli.py copy-server <source> <new-name>
+    python cli.py delete-server <name>
     python cli.py <server> <command> [args...] [-s] [-t SECONDS]
 
 Commands:
     list-servers                List all configured servers
+    create-server <name> <file> Create a server from a YAML config
+    update-server <name> <file> Merge a YAML config patch (--replace for full replace)
+    copy-server <source> <name> Copy a server config to a new name
+    delete-server <name>        Delete a server config
     <server> run <cmd>          Run a command on remote server
     <server> run-script <name>  Run an uploaded script (from scripts_dir)
     <server> alias <name>       Run an alias-defined command (sudo set in YAML)
@@ -124,6 +136,36 @@ def main():
     if first == "list-servers":
         servers = pool.list_servers()
         print(json.dumps({"count": len(servers), "servers": servers}, indent=2, ensure_ascii=False))
+        return
+
+    if first in ("create-server", "update-server"):
+        if len(rest) < 2:
+            print(f"Usage: python cli.py {first} <name> <config.yml>", file=sys.stderr)
+            sys.exit(1)
+        name = rest[0]
+        config = load_yaml(_normalize_path(rest[1]))
+        if first == "create-server":
+            result = pool.create_server(name, config)
+        else:
+            result = pool.update_server(
+                name, config, replace=_extract_flag(rest, "--replace")
+            )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+
+    if first == "delete-server":
+        if len(rest) != 1:
+            print("Usage: python cli.py delete-server <name>", file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(pool.delete_server(rest[0]), indent=2, ensure_ascii=False))
+        return
+
+    if first == "copy-server":
+        if len(rest) != 2:
+            print("Usage: python cli.py copy-server <source> <new-name>", file=sys.stderr)
+            sys.exit(1)
+        result = pool.copy_server(rest[0], rest[1])
+        print(json.dumps(result, indent=2, ensure_ascii=False))
         return
 
     # Get connection

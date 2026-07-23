@@ -76,6 +76,11 @@ security:
 
 代理优先尝试，失败后自动回退到直连。
 
+`auto_reconnect` 用于控制连接请求失败后的后台重连。连续连接失败少于 5 次时，
+按 `reconnect_interval` 指定的秒数重试；第 5 次失败后降为每 60 秒重试一次。
+即使处于冷却期，新的 CLI 或 MCP 请求也会立即触发一次连接尝试。
+设置 `auto_reconnect: false` 可完全关闭后台重连。
+
 ## 服务器配置（`{servers_dir}/{name}.yml`）
 
 在 `servers/` 目录中为每台服务器创建 `.yml` 文件：

@@ -73,6 +73,12 @@ security:
 
 Proxy is tried first, auto-fallback to direct connection on failure.
 
+`auto_reconnect` enables background reconnects after a failed request.
+`reconnect_interval` is used while there have been fewer than five consecutive
+connection failures. After the fifth failure, retries slow to once every 60
+seconds. A new CLI or MCP request always triggers an immediate attempt, even
+during that cooldown. Set `auto_reconnect: false` to disable background attempts.
+
 ## Server Configuration (`{servers_dir}/{name}.yml`)
 
 Create a `.yml` file for each server in the `servers/` directory:

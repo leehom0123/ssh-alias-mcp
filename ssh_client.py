@@ -20,6 +20,7 @@ Usage:
 """
 import hashlib
 import io
+import os
 import re
 import sys
 import time
@@ -178,6 +179,19 @@ class SSHConnection:
         self.sudo_password = cfg.get("sudo_password") or cfg.get("password")
         self.timeout = int(cfg.get("timeout",
                                    global_config.get("server", {}).get("timeout", 30)))
+        server_defaults = global_config.get("server", {})
+        self.auto_reconnect = bool(
+            cfg.get("auto_reconnect", server_defaults.get("auto_reconnect", True))
+        )
+        self.reconnect_interval = max(
+            0.0,
+            float(cfg.get(
+                "reconnect_interval",
+                server_defaults.get("reconnect_interval", 5),
+            )),
+        )
+        self.reconnect_fast_attempts = 5
+        self.reconnect_slow_interval = 60.0
         self.scripts_dir = cfg.get("scripts_dir",
                                      f"/home/{cfg.get('user', 'root')}/scripts")
         self.scripts_local_dir = cfg.get("scripts_local_dir")
@@ -209,9 +223,29 @@ class SSHConnection:
 
         self._client: Optional[paramiko.SSHClient] = None
         self._last_used = 0
+        self._connect_lock = threading.Lock()
+        self._connect_failures = 0
+        self._reconnect_wakeup = threading.Event()
+        self._reconnect_thread: Optional[threading.Thread] = None
+        self._closed = False
 
     def connect(self):
-        """Establish connection (reuses active connection if alive)"""
+        """Connect for an explicit request, bypassing any reconnect cooldown."""
+        with self._connect_lock:
+            self._closed = False
+            if self._client and self._is_alive():
+                self._last_used = time.time()
+                return
+            try:
+                self._connect_once()
+            except Exception:
+                self._record_connect_failure()
+                raise
+            self._connect_failures = 0
+            self._reconnect_wakeup.set()
+
+    def _connect_once(self):
+        """Perform one proxy/direct connection cycle."""
         # Dynamically reload proxy config
         current_proxy_cfg = load_global_config().get("proxy", {})
         if current_proxy_cfg.get("enabled"):
@@ -226,9 +260,6 @@ class SSHConnection:
         else:
             proxy = None
 
-        if self._client and self._is_alive():
-            self._last_used = time.time()
-            return
         if self._client:
             self._client.close()
             self._client = None
@@ -250,33 +281,113 @@ class SSHConnection:
         # Direct connection (fallback after proxy failure)
         self._connect_direct()
 
+    def _record_connect_failure(self):
+        """Record a failed cycle and ensure policy-controlled background retries."""
+        self._connect_failures += 1
+        if not self.auto_reconnect or self._closed:
+            return
+        if not self._reconnect_thread or not self._reconnect_thread.is_alive():
+            self._reconnect_thread = threading.Thread(
+                target=self._reconnect_loop,
+                name=f"ssh-reconnect-{self.host}",
+                daemon=True,
+            )
+            self._reconnect_thread.start()
+        self._reconnect_wakeup.set()
+
+    def _reconnect_loop(self):
+        """Retry quickly for five failures, then once per minute."""
+        while True:
+            with self._connect_lock:
+                if (
+                    self._closed
+                    or not self.auto_reconnect
+                    or (self._client and self._is_alive())
+                ):
+                    return
+                delay = (
+                    self.reconnect_interval
+                    if self._connect_failures < self.reconnect_fast_attempts
+                    else self.reconnect_slow_interval
+                )
+                self._reconnect_wakeup.clear()
+
+            # Explicit requests set this event after their immediate attempt,
+            # restarting the policy delay without causing a duplicate attempt.
+            if self._reconnect_wakeup.wait(delay):
+                continue
+
+            with self._connect_lock:
+                if (
+                    self._closed
+                    or not self.auto_reconnect
+                    or (self._client and self._is_alive())
+                ):
+                    return
+                try:
+                    self._connect_once()
+                except Exception as exc:
+                    self._connect_failures += 1
+                    phase = (
+                        "fast"
+                        if self._connect_failures < self.reconnect_fast_attempts
+                        else "60s cooldown"
+                    )
+                    print(
+                        f"SSH reconnect failed "
+                        f"(consecutive failures={self._connect_failures}, next={phase}): "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                    )
+                    continue
+                self._connect_failures = 0
+                return
+
     def _connect_proxy_with(self, proxy: dict):
         """Connect via SOCKS5 proxy"""
         import socks
         sock = socks.socksocket()
-        sock.set_proxy(socks.SOCKS5, proxy["host"], int(proxy["port"]))
-        sock.settimeout(self.timeout)
-        sock.connect((self.host, self.port))
+        transport = None
+        try:
+            sock.set_proxy(socks.SOCKS5, proxy["host"], int(proxy["port"]))
+            sock.settimeout(self.timeout)
+            sock.connect((self.host, self.port))
 
-        c = paramiko.SSHClient()
-        c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        t = paramiko.Transport(sock)
-        kw = self._get_auth()
-        t.connect(username=self.user, **kw)
-        t.set_keepalive(60)
-        c._transport = t
-        self._client = c
-        self._last_used = time.time()
+            c = paramiko.SSHClient()
+            c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            transport = paramiko.Transport(sock)
+            kw = self._get_auth()
+            transport.connect(username=self.user, **kw)
+            transport.set_keepalive(60)
+            c._transport = transport
+            self._client = c
+            self._last_used = time.time()
+        except Exception:
+            if transport is not None:
+                transport.close()
+            else:
+                sock.close()
+            raise
 
     def _connect_direct(self):
         """Connect directly (no proxy)"""
         c = paramiko.SSHClient()
         c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         kw = self._get_auth()
-        c.connect(self.host, port=self.port, username=self.user, timeout=self.timeout, **kw)
-        c.get_transport().set_keepalive(60)
-        self._client = c
-        self._last_used = time.time()
+        try:
+            c.connect(
+                self.host,
+                port=self.port,
+                username=self.user,
+                timeout=self.timeout,
+                **kw,
+            )
+            c.get_transport().set_keepalive(60)
+            self._client = c
+            self._last_used = time.time()
+        except Exception:
+            c.close()
+            raise
 
     def _get_auth(self) -> dict:
         """Get authentication parameters (key or password)"""
@@ -773,9 +884,12 @@ class SSHConnection:
 
     def close(self):
         """Close the SSH connection"""
-        if self._client:
-            self._client.close()
-            self._client = None
+        with self._connect_lock:
+            self._closed = True
+            self._reconnect_wakeup.set()
+            if self._client:
+                self._client.close()
+                self._client = None
 
 
 class ConnectionPool:
@@ -800,8 +914,162 @@ class ConnectionPool:
             self._pool[key] = conn
             return conn
 
+    def create_server(self, server_name: str, config: dict) -> dict:
+        """Create a server YAML file without overwriting an existing config."""
+        key, config_path = self._config_target(server_name)
+        if config_path.exists():
+            raise FileExistsError(f"Server config already exists: {config_path}")
+        self._validate_server_config(config)
+        self._write_config(config_path, config)
+        self._discard(key)
+        return {"name": key, "path": str(config_path), "created": True}
+
+    def update_server(self, server_name: str, config: dict, replace: bool = False) -> dict:
+        """Recursively merge a server config patch, or replace the whole config."""
+        key, config_path = self._config_target(server_name)
+        if not config_path.exists():
+            raise FileNotFoundError(f"Server config not found: {config_path}")
+        current = load_yaml(str(config_path))
+        updated = config if replace else self._deep_merge(current, config)
+        self._validate_server_config(updated)
+        self._write_config(config_path, updated)
+        self._discard(key)
+        return {
+            "name": key,
+            "path": str(config_path),
+            "updated": True,
+            "replace": replace,
+        }
+
+    def copy_server(self, source_server: str, target_server: str) -> dict:
+        """Copy a server YAML file to a new name without overwriting."""
+        source_key, source_path = self._config_target(source_server)
+        target_key, target_path = self._config_target(target_server)
+        if not source_path.exists():
+            raise FileNotFoundError(f"Server config not found: {source_path}")
+        if target_path.exists():
+            raise FileExistsError(f"Server config already exists: {target_path}")
+        config = load_yaml(str(source_path))
+        self._validate_server_config(config)
+        self._copy_config_file(source_path, target_path)
+        self._discard(target_key)
+        return {
+            "source": source_key,
+            "name": target_key,
+            "path": str(target_path),
+            "copied": True,
+        }
+
+    def delete_server(self, server_name: str) -> dict:
+        """Delete one server YAML file."""
+        key, config_path = self._config_target(server_name)
+        if not config_path.exists():
+            raise FileNotFoundError(f"Server config not found: {config_path}")
+        config_path.unlink()
+        self._discard(key)
+        return {"name": key, "path": str(config_path), "deleted": True}
+
+    def _config_target(self, server_name: str):
+        if not isinstance(server_name, str):
+            raise ValueError("Server name must be a string")
+        name = server_name.strip()
+        if name.lower().endswith((".yml", ".yaml")):
+            name = name.rsplit(".", 1)[0]
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):
+            raise ValueError(
+                "Invalid server name; use letters, numbers, dot, underscore, or hyphen"
+            )
+        key = name.lower()
+        return key, SERVERS_DIR / f"{key}.yml"
+
+    @staticmethod
+    def _validate_server_config(config: dict):
+        if not isinstance(config, dict):
+            raise ValueError("Server config must be an object")
+        server = config.get("server")
+        if not isinstance(server, dict):
+            raise ValueError("Server config must contain a 'server' object")
+        if not config.get("extends"):
+            for field in ("host", "user"):
+                if not isinstance(server.get(field), str) or not server[field].strip():
+                    raise ValueError(
+                        f"Server config must contain a non-empty server.{field}"
+                    )
+        aliases = config.get("aliases")
+        if aliases is not None and not isinstance(aliases, list):
+            raise ValueError("Server config 'aliases' must be an array")
+        if aliases is not None:
+            for index, alias in enumerate(aliases):
+                if not isinstance(alias, dict):
+                    raise ValueError(f"Alias at index {index} must be an object")
+                if not isinstance(alias.get("name"), str) or not alias["name"].strip():
+                    raise ValueError(f"Alias at index {index} must have a non-empty name")
+
+    @staticmethod
+    def _deep_merge(current: dict, patch: dict) -> dict:
+        if not isinstance(patch, dict):
+            raise ValueError("Server config patch must be an object")
+        merged = dict(current)
+        for key, value in patch.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = ConnectionPool._deep_merge(merged[key], value)
+            else:
+                merged[key] = value
+        return merged
+
+    @staticmethod
+    def _write_config(config_path: Path, config: dict, mode: int = None):
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = config_path.with_name(f".{config_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            text = yaml.safe_dump(
+                config,
+                allow_unicode=True,
+                sort_keys=False,
+                default_flow_style=False,
+            )
+            temp_path.write_text(text, encoding="utf-8")
+            file_mode = mode
+            if file_mode is None:
+                file_mode = (
+                    config_path.stat().st_mode & 0o777
+                    if config_path.exists()
+                    else 0o600
+                )
+            temp_path.chmod(file_mode)
+            os.replace(temp_path, config_path)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+    @staticmethod
+    def _copy_config_file(source_path: Path, target_path: Path):
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = target_path.with_name(f".{target_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp_path.write_bytes(source_path.read_bytes())
+            temp_path.chmod(source_path.stat().st_mode & 0o777)
+            os.replace(temp_path, target_path)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+    def _discard(self, key: str):
+        with self._lock:
+            conn = self._pool.pop(key, None)
+        if conn is not None:
+            conn.close()
+
+    def close_all(self):
+        """Close and remove all cached connections."""
+        with self._lock:
+            connections = list(self._pool.values())
+            self._pool.clear()
+        for conn in connections:
+            conn.close()
+
     def _resolve_config_path(self, name: str) -> str:
-        config_path = SERVERS_DIR / f"{name}.yml"
+        _, config_path = self._config_target(name)
         if not config_path.exists():
             raise FileNotFoundError(f"Server config not found: {config_path}")
         return str(config_path)

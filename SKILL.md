@@ -26,6 +26,10 @@ python cli.py <server> <subcommand> [args...] [-s] [-t SECS]
 
 ```bash
 python cli.py list-servers                                    # List all servers
+python cli.py create-server <name> <config.yml>               # Create server config
+python cli.py update-server <name> <patch.yml> [--replace]    # Update/replace config
+python cli.py copy-server <source> <new-name>                 # Copy server config
+python cli.py delete-server <name>                            # Delete server config
 python cli.py <server> run "<cmd>" [-s] [-t sec]             # Run command (real-time stream)
 python cli.py <server> run-script <name> [-s] [-t sec]       # Run uploaded script
 python cli.py <server> alias <name>                           # Run alias (sudo from YAML)

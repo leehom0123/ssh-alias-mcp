@@ -7,6 +7,10 @@ All commands that connect to SSH support `-s` (sudo) and `-t` (timeout).
 
 ```bash
 python cli.py list-servers                             # List all servers
+python cli.py create-server <name> <config.yml>        # Create; refuses overwrite
+python cli.py update-server <name> <patch.yml> [--replace]  # Merge patch or replace
+python cli.py copy-server <source> <new-name>           # Copy to a new server name
+python cli.py delete-server <name>                     # Delete local server config
 python cli.py <server> run "<command>" [-s] [-t sec]   # Execute a command (-s = sudo, streams output)
 python cli.py <server> run-script <name> [-s] [-t sec]  # Run an uploaded script (streams output)
 python cli.py <server> alias <name>                     # Run an alias (streams output, sudo in YAML)
@@ -28,6 +32,21 @@ python cli.py <server> list-aliases                      # List aliases (local, 
 - `-r` / `--run` — (upload) Run script immediately after upload
 - `-p` / `--pattern` PAT — (download) Regex pattern to filter filenames
 - `--no-overwrite` — (download) Skip existing local files
+- `--replace` — (update-server) Replace the complete config instead of recursively merging the patch
+
+## Manage Server Configurations
+
+Create and replace operations read standard server YAML files. Updates recursively merge
+objects; arrays such as `aliases` are replaced as a whole. Server names may contain only
+letters, numbers, dots, underscores, and hyphens.
+
+```bash
+python cli.py create-server staging ./staging.yml
+python cli.py update-server staging ./port-patch.yml
+python cli.py update-server staging ./staging.yml --replace
+python cli.py copy-server staging staging-copy
+python cli.py delete-server staging
+```
 
 ## Real-time Streaming
 

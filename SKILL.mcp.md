@@ -28,6 +28,10 @@ python cli.py <server> alias deploy
 | Tool | Parameters | Description |
 |------|------------|-------------|
 | `ssh_list_servers` | — | List all configured servers |
+| `ssh_create_server` | `server`, `config` | Create a server config; refuses overwrite |
+| `ssh_update_server` | `server`, `config`, `replace`(default false) | Merge a config patch or replace it |
+| `ssh_copy_server` | `source_server`, `target_server` | Copy a server config to a new name |
+| `ssh_delete_server` | `server` | Delete a server config |
 | `ssh_list_aliases` | `server` | List quick-command aliases |
 | `ssh_list_scripts` | `server`, `sudo`(default false) | List uploaded scripts on remote |
 | `ssh_run` | `server`, `command`, `timeout`(default 60s), `sudo`(default false) | Execute a command |

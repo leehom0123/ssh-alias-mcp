@@ -27,7 +27,7 @@ from mcp_server import (
     ArgSpec, ToolSpec, McpProtocolError,
     mcp_result, mcp_text, jsonrpc_error, jsonrpc_result,
     _sanitize_tool_part, _unique_alias_tool_name, _raw_output,
-    _with_execution_summary, _tool_args_summary,
+    _with_execution_summary, _tool_args_summary, _redact_secrets,
     _require_object, _validate_tool_args, _negotiate_protocol_version,
     handle_request, handle_message,
     SUPPORTED_PROTOCOL_VERSIONS, LATEST_PROTOCOL_VERSION,
@@ -255,6 +255,15 @@ def test_tool_args_summary():
     _inc("ok" if "Tool: ssh_run" in text and '"command": "uname -a"' in text else "fail",
          "tool argument summary includes concrete args",
          f"text={text!r}")
+    redacted = _redact_secrets({
+        "config": {
+            "server": {"password": "one", "sudo_password": "two"},
+            "aliases": [{"name": "ok"}],
+        }
+    })
+    encoded = json.dumps(redacted)
+    _inc("ok" if "one" not in encoded and "two" not in encoded else "fail",
+         "tool argument summary redacts nested secrets")
 
 
 def test_mcp_helpers():
@@ -463,14 +472,16 @@ def test_handle_request_tools_list():
         "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {},
     })
     tools = resp.get("result", {}).get("tools", [])
-    _inc("ok" if len(tools) >= 9 else "fail",
-         "at least 9 static tools",
+    _inc("ok" if len(tools) >= 13 else "fail",
+         "at least 13 static tools",
          f"count={len(tools)}")
 
     names = {t["name"] for t in tools}
     for required in ("ssh_run", "ssh_list_servers", "ssh_list_aliases",
                      "ssh_run_alias", "ssh_upload_script", "ssh_run_script",
-                     "ssh_list_scripts", "ssh_download", "ssh_upload_all_scripts"):
+                     "ssh_list_scripts", "ssh_download", "ssh_upload_all_scripts",
+                     "ssh_create_server", "ssh_update_server", "ssh_copy_server",
+                     "ssh_delete_server"):
         _inc("ok" if required in names else "fail",
              f"{required} is in tools list")
 
@@ -591,7 +602,7 @@ def test_handle_request_handler_exception():
         "jsonrpc": "2.0", "id": 40, "method": "tools/call",
         "params": {
             "name": "ssh_run",
-            "arguments": {"server": "__nonexistent__xyz", "command": "echo hi", "timeout": 5, "sudo": False},
+            "arguments": {"server": "nonexistent-xyz", "command": "echo hi", "timeout": 5, "sudo": False},
         },
     })
     # Exception is caught and wrapped in result with isError=True
@@ -656,10 +667,10 @@ def test_handle_message_error_wrapping():
     _inc("ok" if resp.get("error", {}).get("code") == -32601 else "fail",
          "McpProtocolError wrapped as JSON-RPC error")
 
-    # Error with no id → id is None in error response
+    # Error with no id is a JSON-RPC notification and gets no response.
     resp2 = handle_message({"jsonrpc": "2.0", "method": "unknown_method"})
-    _inc("ok" if resp2.get("error", {}).get("code") == -32601 and resp2.get("id") is None else "fail",
-         "error without id returns id=None",
+    _inc("ok" if resp2 is None else "fail",
+         "error notification returns no response",
          f"resp={resp2!r}")
 
 

@@ -35,9 +35,18 @@ LATEST_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0]
 MCP_INSTRUCTIONS = (
     "Use ssh_list_servers first to discover configured servers. "
     "Use ssh_list_aliases before ssh_run_alias unless you already know the alias name. "
+    "Server config create, update, copy, and delete tools modify local YAML files. "
     "Commands, uploads, downloads, and aliases can modify remote systems."
 )
 TOOL_NAME_MAX_LENGTH = 128
+SECRET_FIELDS = {
+    "password",
+    "passphrase",
+    "private_key",
+    "private_key_path",
+    "proxy_password",
+    "sudo_password",
+}
 
 
 @dataclass(frozen=True)
@@ -119,6 +128,10 @@ def _require_object(value, name: str) -> dict:
 
 
 def _validate_tool_args(args: dict, specs: Tuple[ArgSpec, ...]) -> dict:
+    allowed = {spec.name for spec in specs}
+    unknown = sorted(set(args) - allowed)
+    if unknown:
+        raise McpProtocolError(-32602, f"Unknown argument(s): {', '.join(unknown)}")
     values = {}
     for spec in specs:
         value = args.get(spec.name, spec.default)
@@ -139,6 +152,8 @@ def _validate_tool_args(args: dict, specs: Tuple[ArgSpec, ...]) -> dict:
             )
         if spec.json_type == "boolean" and not isinstance(value, bool):
             raise McpProtocolError(-32602, f"Invalid boolean argument: {spec.name}")
+        if spec.json_type == "object" and not isinstance(value, dict):
+            raise McpProtocolError(-32602, f"Invalid object argument: {spec.name}")
         if spec.json_type == "number":
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 raise McpProtocolError(-32602, f"Invalid number argument: {spec.name}")
@@ -337,6 +352,26 @@ def _handle_ssh_list_servers(args: dict) -> dict:
     return _json_text({"count": len(servers), "servers": servers})
 
 
+def _handle_ssh_create_server(args: dict) -> dict:
+    return _json_text(pool.create_server(args["server"], args["config"]))
+
+
+def _handle_ssh_update_server(args: dict) -> dict:
+    return _json_text(
+        pool.update_server(args["server"], args["config"], replace=args["replace"])
+    )
+
+
+def _handle_ssh_copy_server(args: dict) -> dict:
+    return _json_text(
+        pool.copy_server(args["source_server"], args["target_server"])
+    )
+
+
+def _handle_ssh_delete_server(args: dict) -> dict:
+    return _json_text(pool.delete_server(args["server"]))
+
+
 def _handle_ssh_download(args: dict) -> dict:
     return _with_execution_summary(
         _server_conn(args).download(
@@ -393,8 +428,19 @@ def _tool_args_summary(name: str, args: dict) -> str:
     return "\n".join([
         f"Tool: {name}",
         "Arguments:",
-        json.dumps(args, indent=2, ensure_ascii=False),
+        json.dumps(_redact_secrets(args), indent=2, ensure_ascii=False),
     ])
+
+
+def _redact_secrets(value):
+    if isinstance(value, dict):
+        return {
+            key: "***REDACTED***" if key.lower() in SECRET_FIELDS else _redact_secrets(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_secrets(item) for item in value]
+    return value
 
 
 def _arg(name: str, json_type: str, description: str, required: bool = False, default=None) -> ArgSpec:
@@ -407,6 +453,48 @@ TIMEOUT_300_ARG = _arg("timeout", "number", "Timeout in seconds", default=300)
 
 
 STATIC_TOOLS = {
+    "ssh_create_server": ToolSpec(
+        name="ssh_create_server",
+        title="Create SSH Server",
+        description="Create a local YAML server configuration. Existing files are never overwritten.",
+        args=(
+            SERVER_ARG,
+            _arg("config", "object", "Complete server configuration object", required=True),
+        ),
+        annotations={"readOnlyHint": False, "destructiveHint": False},
+        handler=_handle_ssh_create_server,
+    ),
+    "ssh_update_server": ToolSpec(
+        name="ssh_update_server",
+        title="Update SSH Server",
+        description="Recursively merge a local server configuration patch, or replace the full config.",
+        args=(
+            SERVER_ARG,
+            _arg("config", "object", "Configuration patch or complete replacement", required=True),
+            _arg("replace", "boolean", "Replace the full config instead of merging", default=False),
+        ),
+        annotations={"readOnlyHint": False, "destructiveHint": True},
+        handler=_handle_ssh_update_server,
+    ),
+    "ssh_copy_server": ToolSpec(
+        name="ssh_copy_server",
+        title="Copy SSH Server",
+        description="Copy a local server configuration to a new name. Existing files are never overwritten.",
+        args=(
+            _arg("source_server", "string", "Existing server name", required=True),
+            _arg("target_server", "string", "New server name", required=True),
+        ),
+        annotations={"readOnlyHint": False, "destructiveHint": False},
+        handler=_handle_ssh_copy_server,
+    ),
+    "ssh_delete_server": ToolSpec(
+        name="ssh_delete_server",
+        title="Delete SSH Server",
+        description="Permanently delete one local YAML server configuration.",
+        args=(SERVER_ARG,),
+        annotations={"readOnlyHint": False, "destructiveHint": True},
+        handler=_handle_ssh_delete_server,
+    ),
     "ssh_run": ToolSpec(
         name="ssh_run",
         title="Run SSH Command",
