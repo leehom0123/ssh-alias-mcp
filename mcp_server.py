@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from hashlib import sha1
 from typing import Callable, Dict, Tuple
 
-# Force UTF-8 output on Windows. stdout must contain only MCP JSON messages.
+# MCP stdio is UTF-8. Force all three streams on Windows; stdout must contain
+# only MCP JSON messages.
+if sys.stdin.encoding != "utf-8":
+    sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="strict")
 if sys.stdout.encoding != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
