@@ -21,12 +21,21 @@ server:
   auto_reconnect: true
   # Interval between reconnection attempts (seconds)
   reconnect_interval: 5
+  # SSH transport keepalive interval (seconds; 0 disables keepalive)
+  keepalive_interval: 15
+  # Host key verification before authentication:
+  #   tofu     - trust on first use, persist to known_hosts (default)
+  #   strict   - only connect to keys already in known_hosts
+  #   insecure - no verification (not recommended)
+  host_key_checking: tofu
 
-# Global command filtering (per-server whitelist/blacklist overrides)
+# Global command filtering (per-server whitelist/blacklist overrides these)
 security:
-  # Regex patterns to block commands (e.g., "rm -rf|mkfs|dd ")
+  # Regex patterns to block commands (searched anywhere in the command)
   blacklist: []
-  # Regex patterns to allow commands (empty = no restriction)
+  # Regex patterns to allow commands (empty = no restriction).
+  # NOTE: the WHOLE command must fully match one pattern (re.fullmatch),
+  # so write patterns like "ls.*" or "(ls|df).*", not bare "ls|df".
   whitelist: []
   # Command template to wrap all commands (use <command> as placeholder)
   command_template: ""

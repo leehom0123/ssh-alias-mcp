@@ -43,7 +43,10 @@ python cli.py <server> alias deploy
 | `ssh_alias.{server}.{name}` | — (auto-generated) | One-click alias execution |
 
 ### Notes
-- **sudo** — Use `ssh_run` with `sudo: true`, never inline `sudo -S` in commands
+- **sudo** — Use `ssh_run` with `sudo: true`, never inline `sudo -S` in commands (password is sent via stdin automatically)
+- **timeout** — `0` means use the server's configured default timeout
+- **Concurrency** — Commands on the same server run in parallel on independent SSH channels
+- **Host keys** — Verified before authentication; keys persist to `known_hosts` (see `host_key_checking` in REFERENCE.md)
 - **Dynamic alias tools** — MCP exposes aliases as `ssh_alias.{server}.{name}`
 - **Live stream output** — For real-time streaming, use CLI. See [CLI_USAGE.md](CLI_USAGE.md)
 - **Docker build real-time output** — `docker build` uses buildkit JSON output by default. Add `--progress=plain` for real-time output. NEVER pipe to `tail` (e.g. `| tail -5`) as it buffers until command completes. Example: `docker build --progress=plain -t myimage .`

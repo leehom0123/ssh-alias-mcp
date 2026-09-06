@@ -24,7 +24,15 @@ python cli.py <server> list-aliases                      # List aliases (local, 
 ## Common Flags
 
 - `-s` / `--sudo` — Execute as root (requires `sudo_password`). Upload: stages via /tmp preserving owner/mode. Download: stages via /tmp + chown.
-- `-t` / `--timeout` SECS — Timeout in seconds (default: 300)
+- `-t` / `--timeout` SECS — Timeout in seconds (default: server `timeout` from YAML)
+
+Flags are parsed **from the tail** of the arguments after the subcommand only.
+Write them at the end so flags inside the command text survive:
+
+```bash
+python cli.py my-server run "grep -s ERROR app.log"        # inner -s kept
+python cli.py my-server run "grep ERROR app.log" -s        # trailing -s = sudo
+```
 
 ## Per-Command Flags
 

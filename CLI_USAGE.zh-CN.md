@@ -24,7 +24,14 @@ python cli.py <server> list-aliases                      # 列出别名（本地
 ## 通用标志
 
 - `-s` / `--sudo` — 以 root 身份执行（需要 `sudo_password`）。上传：通过 /tmp 暂存保留所有者/模式。下载：通过 /tmp 暂存 + chown。
-- `-t` / `--timeout` SECS — 超时（秒，默认：300）
+- `-t` / `--timeout` SECS — 超时（秒，默认：服务器 YAML 中的 `timeout`）
+
+标志只在子命令之后参数的**尾部**解析，请写在末尾，命令文本内部的标志会被原样保留：
+
+```bash
+python cli.py my-server run "grep -s ERROR app.log"        # 内部的 -s 保留
+python cli.py my-server run "grep ERROR app.log" -s        # 末尾的 -s = sudo
+```
 
 ## 命令专属标志
 

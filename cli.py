@@ -90,16 +90,31 @@ def _extract_flag(args: list, *flags) -> bool:
     return found
 
 
-def _extract_opt(args: list, *flags, default=None):
-    """Pop --opt VALUE pair from args, return value or default."""
-    for f in flags:
-        if f in args:
-            idx = args.index(f)
-            if idx + 1 < len(args):
-                value = args[idx + 1]
-                del args[idx:idx + 2]
-                return value
-    return default
+def _pop_tail_flags(tokens: list, bool_flags: set, opt_flags: set) -> dict:
+    """Pop recognised flags from the TAIL of tokens only.
+
+    Flags buried inside the command text (e.g. ``grep -s foo``) are not at
+    the tail and therefore survive into the payload unchanged.
+    Returns {flag: True} for booleans and {flag: value} for valued options.
+    """
+    found = {}
+    while tokens:
+        if tokens[-1] in bool_flags:
+            found[tokens[-1]] = True
+            tokens.pop()
+        elif len(tokens) >= 2 and tokens[-2] in opt_flags:
+            found[tokens[-2]] = tokens[-1]
+            del tokens[-2:]
+        else:
+            break
+    return found
+
+
+def _flag_value(found: dict, *names):
+    for n in names:
+        if n in found:
+            return found[n]
+    return None
 
 
 def _write_result(result: dict) -> int:
@@ -171,16 +186,28 @@ def main():
     # Get connection
     conn = pool.get(first)
 
-    # Parse common flags first (mutating `rest`)
-    timeout_str = _extract_opt(rest, "-t", "--timeout")
-    timeout = int(timeout_str) if timeout_str is not None else conn.timeout
-    sudo = _extract_flag(rest, "-s", "--sudo")
-
-    # Route command
+    # Route command; flags are only consumed from the TAIL of the arguments
+    # after the subcommand, so flags inside the command text are preserved.
     cmd = rest[0] if rest else None
+    payload = rest[1:]
+    flags = _pop_tail_flags(
+        payload,
+        bool_flags={"-s", "--sudo", "-r", "--run", "--no-overwrite"},
+        opt_flags={"-t", "--timeout", "-n", "--name", "-p", "--pattern"},
+    )
+    sudo = ("-s" in flags) or ("--sudo" in flags)
+    timeout_str = _flag_value(flags, "-t", "--timeout")
+    if timeout_str is not None:
+        try:
+            timeout = int(timeout_str)
+        except ValueError:
+            print(f"Invalid timeout: {timeout_str}", file=sys.stderr)
+            sys.exit(2)
+    else:
+        timeout = conn.timeout
 
-    if cmd == "run" and len(rest) >= 2:
-        command = " ".join(rest[1:])
+    if cmd == "run" and payload:
+        command = " ".join(payload)
         result = conn.run(
             command, timeout=timeout, sudo=sudo,
             stream_cb=lambda chunk, is_stderr: (
@@ -189,23 +216,23 @@ def main():
         )
         sys.exit(result.get("code", 1))
 
-    elif cmd == "alias" and len(rest) >= 2:
+    elif cmd == "alias" and payload:
         # sudo for alias is defined inside the YAML (per-alias `sudo: true`)
-        result = conn.run_alias(rest[1], stream_cb=lambda chunk, is_stderr: (
+        result = conn.run_alias(payload[0], stream_cb=lambda chunk, is_stderr: (
             sys.stderr.write(chunk) if is_stderr else sys.stdout.write(chunk)
         ))
         sys.exit(result.get("code", 1))
 
-    elif cmd == "run-script" and len(rest) >= 2:
-        result = conn.run_script(rest[1], timeout=timeout, sudo=sudo, stream_cb=lambda chunk, is_stderr: (
+    elif cmd == "run-script" and payload:
+        result = conn.run_script(payload[0], timeout=timeout, sudo=sudo, stream_cb=lambda chunk, is_stderr: (
             sys.stderr.write(chunk) if is_stderr else sys.stdout.write(chunk)
         ))
         sys.exit(result.get("code", 1))
 
-    elif cmd == "upload" and len(rest) >= 2:
-        local_script = _normalize_path(rest[1])
-        run_immediately = _extract_flag(rest, "-r", "--run")
-        name = _extract_opt(rest, "-n", "--name")
+    elif cmd == "upload" and payload:
+        local_script = _normalize_path(payload[0])
+        run_immediately = ("-r" in flags) or ("--run" in flags)
+        name = _flag_value(flags, "-n", "--name")
         result = conn.upload_script(local_script, script_name=name,
                                      run_immediately=run_immediately,
                                      timeout=timeout, sudo=sudo)
@@ -223,11 +250,11 @@ def main():
         aliases = conn.list_aliases()
         print(json.dumps({"count": len(aliases), "aliases": aliases}, indent=2, ensure_ascii=False))
 
-    elif cmd == "download" and len(rest) >= 3:
-        remote_path = rest[1]
-        local_path = _normalize_path(rest[2])
-        pattern = _extract_opt(rest, "-p", "--pattern")
-        overwrite = not _extract_flag(rest, "--no-overwrite")
+    elif cmd == "download" and len(payload) >= 2:
+        remote_path = payload[0]
+        local_path = _normalize_path(payload[1])
+        pattern = _flag_value(flags, "-p", "--pattern")
+        overwrite = "--no-overwrite" not in flags
         result = conn.download(remote_path, local_path, timeout=timeout,
                                pattern=pattern, overwrite=overwrite, sudo=sudo)
         sys.exit(_write_result(result))

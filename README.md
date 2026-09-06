@@ -9,6 +9,7 @@ AI-driven server operations tool. Configure servers in YAML, execute commands, d
 - **One config, three shells** — `bash`, `cmd`, `powershell` auto-adapted via command templates
 - **Alias system** — One YAML line = one AI skill, auto-exposed as MCP tools
 - **MCP + CLI** — Same config, same connection pool, shared by AI and humans
+- **Secure by default** — Host key verification before auth, shell-quoted command arguments, sudo passwords via stdin (never in argv)
 
 ## Quick Start
 

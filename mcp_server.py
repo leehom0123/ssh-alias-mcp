@@ -7,11 +7,17 @@ import io
 import json
 import re
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from hashlib import sha1
 from typing import Callable, Dict, Tuple
 
-# Force UTF-8 output on Windows. stdout must contain only MCP JSON messages.
+# MCP stdio is UTF-8. Force all three streams on Windows; stdout must contain
+# only MCP JSON messages.
+if sys.stdin.encoding != "utf-8":
+    sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="strict")
 if sys.stdout.encoding != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
@@ -40,12 +46,15 @@ MCP_INSTRUCTIONS = (
 )
 TOOL_NAME_MAX_LENGTH = 128
 SECRET_FIELDS = {
+    "key_password",
     "password",
     "passphrase",
     "private_key",
     "private_key_path",
     "proxy_password",
     "sudo_password",
+    "token",
+    "secret",
 }
 
 
@@ -157,8 +166,8 @@ def _validate_tool_args(args: dict, specs: Tuple[ArgSpec, ...]) -> dict:
         if spec.json_type == "number":
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 raise McpProtocolError(-32602, f"Invalid number argument: {spec.name}")
-            if value <= 0:
-                raise McpProtocolError(-32602, f"{spec.name} must be greater than 0")
+            if value < 0:
+                raise McpProtocolError(-32602, f"{spec.name} must be >= 0")
         values[spec.name] = value
     return values
 
@@ -196,13 +205,22 @@ def _unique_alias_tool_name(server: str, alias_name: str, used: set) -> str:
         counter += 1
 
 
-def _alias_tool_specs() -> Dict[str, ToolSpec]:
+_ALIAS_SPECS_TTL_SECONDS = 10.0
+_alias_specs_state = {"monotonic": 0.0, "specs": None}
+_alias_specs_lock = threading.Lock()
+
+
+def _build_alias_tool_specs() -> Dict[str, ToolSpec]:
     specs = {}
     used = set()
     for sv in pool.list_servers():
         server = sv["name"]
-        conn = pool.get(server)
-        for alias in conn.list_aliases():
+        try:
+            conn = pool.get(server)
+            alias_list = conn.list_aliases()
+        except Exception:
+            continue
+        for alias in alias_list:
             alias_name = alias["name"]
             tool_name = _unique_alias_tool_name(server, alias_name, used)
             desc = alias.get("desc", "")
@@ -219,6 +237,27 @@ def _alias_tool_specs() -> Dict[str, ToolSpec]:
                 handler=_run_alias_handler(server, alias_name),
             )
     return specs
+
+
+def _alias_tool_specs() -> Dict[str, ToolSpec]:
+    """Cached alias-derived tool specs (TTL) so every tools/call does not
+    rebuild them by re-reading every server config."""
+    with _alias_specs_lock:
+        now = time.monotonic()
+        cached = _alias_specs_state["specs"]
+        if cached is not None and now - _alias_specs_state["monotonic"] < _ALIAS_SPECS_TTL_SECONDS:
+            return cached
+        specs = _build_alias_tool_specs()
+        _alias_specs_state["specs"] = specs
+        _alias_specs_state["monotonic"] = now
+        return specs
+
+
+def invalidate_alias_tool_specs() -> None:
+    """Drop the cached alias tool specs (call after server config changes)."""
+    with _alias_specs_lock:
+        _alias_specs_state["specs"] = None
+        _alias_specs_state["monotonic"] = 0.0
 
 
 def _run_alias_handler(server: str, alias_name: str) -> Callable[[dict], dict]:
@@ -353,23 +392,27 @@ def _handle_ssh_list_servers(args: dict) -> dict:
 
 
 def _handle_ssh_create_server(args: dict) -> dict:
-    return _json_text(pool.create_server(args["server"], args["config"]))
+    result = pool.create_server(args["server"], args["config"])
+    invalidate_alias_tool_specs()
+    return _json_text(result)
 
 
 def _handle_ssh_update_server(args: dict) -> dict:
-    return _json_text(
-        pool.update_server(args["server"], args["config"], replace=args["replace"])
-    )
+    result = pool.update_server(args["server"], args["config"], replace=args["replace"])
+    invalidate_alias_tool_specs()
+    return _json_text(result)
 
 
 def _handle_ssh_copy_server(args: dict) -> dict:
-    return _json_text(
-        pool.copy_server(args["source_server"], args["target_server"])
-    )
+    result = pool.copy_server(args["source_server"], args["target_server"])
+    invalidate_alias_tool_specs()
+    return _json_text(result)
 
 
 def _handle_ssh_delete_server(args: dict) -> dict:
-    return _json_text(pool.delete_server(args["server"]))
+    result = pool.delete_server(args["server"])
+    invalidate_alias_tool_specs()
+    return _json_text(result)
 
 
 def _handle_ssh_download(args: dict) -> dict:
@@ -449,7 +492,7 @@ def _arg(name: str, json_type: str, description: str, required: bool = False, de
 
 SERVER_ARG = _arg("server", "string", "Server name", required=True)
 SUDO_ARG = _arg("sudo", "boolean", "Run as root via sudo", default=False)
-TIMEOUT_300_ARG = _arg("timeout", "number", "Timeout in seconds", default=300)
+TIMEOUT_300_ARG = _arg("timeout", "number", "Timeout in seconds (0 = server default)", default=300)
 
 
 STATIC_TOOLS = {
@@ -502,7 +545,7 @@ STATIC_TOOLS = {
         args=(
             SERVER_ARG,
             _arg("command", "string", "Command to execute", required=True),
-            _arg("timeout", "number", "Timeout in seconds", default=60),
+            _arg("timeout", "number", "Timeout in seconds (0 = server default)", default=60),
             SUDO_ARG,
         ),
         annotations={"readOnlyHint": False, "destructiveHint": True},
@@ -656,6 +699,9 @@ def handle_request(req: dict):
             "instructions": MCP_INSTRUCTIONS,
         })
 
+    if method == "ping":
+        return jsonrpc_result(req_id, {})
+
     if method == "tools/list":
         cursor = params.get("cursor")
         if cursor not in (None, ""):
@@ -702,25 +748,35 @@ def _handle_message_item(item):
 
 def write_response(msg):
     line = json.dumps(msg, ensure_ascii=False) + "\n"
-    sys.stdout.write(line)
-    sys.stdout.flush()
+    with _WRITE_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+
+
+_WRITE_LOCK = threading.Lock()
+
+
+def _process_line(line: str):
+    try:
+        req = json.loads(line)
+    except json.JSONDecodeError:
+        write_response(jsonrpc_error(None, -32700, "Parse error"))
+        return
+
+    resp = handle_message(req)
+    if resp is not None:
+        write_response(resp)
 
 
 def main():
     """MCP stdio main loop."""
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            req = json.loads(line)
-        except json.JSONDecodeError:
-            write_response(jsonrpc_error(None, -32700, "Parse error"))
-            continue
-
-        resp = handle_message(req)
-        if resp is not None:
-            write_response(resp)
+    # SSH calls are blocking. Process requests concurrently so one slow host
+    # cannot head-of-line block health checks or calls to other servers.
+    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="mcp-request") as executor:
+        for line in sys.stdin:
+            line = line.strip()
+            if line:
+                executor.submit(_process_line, line)
 
 
 if __name__ == "__main__":

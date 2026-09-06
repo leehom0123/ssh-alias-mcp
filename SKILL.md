@@ -45,14 +45,17 @@ python cli.py <server> list-aliases                          # List aliases (no 
 | Flag | Description |
 |------|-------------|
 | `-s` / `--sudo` | Run as root (upload: stages via /tmp preserving perms; download: /tmp + chown) |
-| `-t` / `--timeout` | Timeout in seconds (default 300) |
+| `-t` / `--timeout` | Timeout in seconds (default: server `timeout` from YAML) |
 | `-r` / `--run` | (upload) Execute immediately after upload |
 | `-n` / `--name` | (upload) Custom remote filename |
 | `-p` / `--pattern` | (download) Regex filter for filenames |
 
+Flags are parsed from the tail of the arguments only, so flags inside the
+command text (e.g. `run "grep -s foo"`) are preserved.
+
 ## Notes
 
-- **sudo** — Use `-s` flag, never inline `sudo -S` in commands
+- **sudo** — Use `-s` flag, never inline `sudo -S` in commands (password is sent via stdin automatically)
 - **Real-time stream** — `run`/`run-script`/`alias` stream via `stream_cb`, not buffered
 - **Docker build** — Add `--progress=plain` for real-time output. Never `| tail` (blocks until done)
 - **Shell** — Set `shell` in server YAML: `bash` / `cmd` / `powershell`

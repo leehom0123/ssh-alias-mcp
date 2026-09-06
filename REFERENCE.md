@@ -15,7 +15,8 @@
                │
 ┌──────────────▼───────────────────────────────────────┐
 │  ssh_client.py  (Shared core)                        │
-│  ├── ConnectionPool (connection reuse, 60s keepalive)│
+│  ├── ConnectionPool (connection reuse, keepalive)    │
+│  ├── Host key verification (known_hosts, tofu/strict)│
 │  ├── SOCKS5 proxy + direct auto-fallback             │
 │  └── SFTP script upload & download                   │
 └──────────────┬───────────────────────────────────────┘
@@ -64,12 +65,29 @@ server:
   timeout: 30                 # Default SSH connection timeout (seconds)
   auto_reconnect: true        # Automatically reconnect on lost connection
   reconnect_interval: 5       # Interval between reconnection attempts (seconds)
+  keepalive_interval: 15      # SSH keepalive interval (seconds, 0 = disable)
+  host_key_checking: tofu     # Host key verification: tofu / strict / insecure
 
 security:
-  blacklist: []               # Regex patterns to block commands
-  whitelist: []               # Regex patterns to allow commands (empty = no restriction)
+  blacklist: []               # Regex patterns to block commands (searched anywhere in the command)
+  whitelist: []               # Regex patterns; the WHOLE command must match one (empty = no restriction)
   command_template: ""        # Command template to wrap all commands
 ```
+
+The global `security` section applies to every server; a per-server
+`blacklist`/`whitelist`/`command_template` (when present) overrides it.
+
+`host_key_checking` controls SSH host key verification (server key is verified
+**before** any password/passphrase is sent):
+
+| Mode | Behaviour |
+|------|-----------|
+| `tofu` (default) | Trust on first use; the key is persisted to `<skill-dir>/known_hosts`. A later key change aborts the connection (possible MITM). |
+| `strict` | Connect only if the key already exists in known_hosts (system + local). Unknown or changed keys abort the connection. |
+| `insecure` | No verification (not recommended) |
+
+To re-enroll a server whose host key legitimately changed, delete its entry
+from `<skill-dir>/known_hosts`.
 
 Proxy is tried first, auto-fallback to direct connection on failure.
 
@@ -108,17 +126,18 @@ server:
   scripts_dir: "/home/user/scripts"  # Remote script directory
   shell: "bash"                  # Shell type (bash / cmd / powershell, default bash)
   system: "Ubuntu 24.04 LTS"    # OS information
+  host_key_checking: "tofu"      # Override global: tofu / strict / insecure
 
   # Server-level proxy override (optional, overrides global config.yaml)
   proxy:
     host: "127.0.0.1"
     port: 10808
 
-  # Security: command filtering (overrides global config.yaml)
+  # Security: command filtering (when present, overrides global config.yaml)
   blacklist:
-    - "rm -rf|mkfs|dd "          # Regex pattern, match = block
+    - "rm -rf|mkfs|dd "          # Regex pattern, match anywhere = block
   whitelist:
-    - "ls|df|docker|tail"        # Regex pattern, only allow matching commands
+    - "(ls|df|docker|tail).*"    # Regex pattern; the WHOLE command must match one
   command_template: "cd /opt/app && <command>"  # Auto-wrap commands
 
   # Upload/download path restrictions (empty = no restriction)
@@ -197,22 +216,30 @@ aliases:                      # Append — local aliases overlay on inherited
 
 ### Shell Command Template Comparison
 
+All placeholder values (`{path}`, `{src}`, `{dst}`, `{tmp}`, `{target}`, `{user}`) are
+shell-quoted centrally for the target shell (POSIX quoting for `bash`, double-quote for
+`cmd`, single-quote doubling for `powershell`), which blocks command injection through
+paths and script names. Values containing control characters (or shell metacharacters on
+`cmd`/`powershell`) are rejected.
+
 | Template | bash | cmd | powershell |
 |----------|------|-----|------------|
-| `mkdir` | `mkdir -p {path}` | `cmd /c "mkdir \\"{path}\\" 2>nul"` | `New-Item -ItemType Directory -Path "{path}" -Force` |
-| `file_exists` | `test -f {path}` | `cmd /c "if exist \\"{path}\\" echo exists"` | `Test-Path "{path}"` |
-| `run_script` | `bash {path}` | `cmd /c "call {path}"` | `& "{path}"` |
-| `chmod` | `chmod {mode:o} {path}` | Not supported | Not supported |
+| `mkdir` | `mkdir -p {path}` | `mkdir {path} 2>nul` | `New-Item -ItemType Directory -Path {path} -Force` |
+| `file_exists` | `test -f {path}` | `if exist {path} (echo exists) else exit 1` | `if (Test-Path {path}) { exit 0 } else { exit 1 }` |
+| `run_script` | `bash {path}` | `call {path}` | `& {path}` |
+| `chmod` | `chmod {mode} {path}` | Not supported | Not supported |
 | `stat_owner` | `stat -c '%U:%G' {path}` | Not supported | Not supported |
 | `stat_mode` | `stat -c '%a' {path}` | Not supported | Not supported |
-| `rm_dir` | `rm -rf {path}` | `cmd /c "rmdir /S /Q \\"{path}\\""` | `Remove-Item -Recurse -Force "{path}"` |
-| `cp_r` | `cp -r {src} {dst}` | `cmd /c "xcopy /Y \\"{src}\\" \\"{dst}\\" /E /I"` | `Copy-Item -Recurse "{src}" "{dst}"` |
-| `move` | `mv {tmp} {target}` | `cmd /c "move /y \\"{tmp}\\" \\"{target}\\""` | `Move-Item -Force "{tmp}" "{target}"` |
+| `rm_dir` | `rm -rf {path}` | `rmdir /S /Q {path}` | `Remove-Item -Recurse -Force {path}` |
+| `cp_r` | `cp -r {src} {dst}` | `xcopy /Y {src} {dst} /E /I` | `Copy-Item -Recurse {src} {dst}` |
+| `move` | `mv {tmp} {target}` | `move /y {tmp} {target}` | `Move-Item -Force {tmp} {target}` |
 | `chown` | `chown {user} {path}` | Not supported | Not supported |
 | `chown_r` | `chown -R {user}:{user} {path}` | Not supported | Not supported |
-| `list_dir` | `ls -la {path}/` | `dir "{path}" /Q` | `Get-ChildItem -Path "{path}" \| Format-List` |
+| `list_dir` | `ls -la {path}` | `dir {path} /Q` | `Get-ChildItem -Path {path} \| Format-List` |
 | `install` | Preserves owner/mode | Move only | Move only |
 | `tmp_prefix` | `/tmp` | `%TEMP%` | `$env:TEMP` |
+
+`file_exists` signals existence via the command exit code (0 = exists, non-zero = missing).
 
 ### Feature Differences
 
@@ -234,18 +261,27 @@ aliases:                      # Append — local aliases overlay on inherited
 Protect your servers with regex whitelist/blacklist:
 
 ```yaml
-# Server YAML override
+# Server YAML override (also settable globally in config.yaml under security:)
 server:
   blacklist:
     - "rm -rf"                 # Block rm -rf on this server
   whitelist:
-    - "ls|df|docker|tail"      # Only allow these commands
+    - "(ls|df|docker|tail).*"  # Only allow commands fully matching a pattern
   command_template: "cd /opt/app && <command>"  # Auto cd then execute
 ```
 
-- **Blacklist**: Command matching any pattern is rejected.
-- **Whitelist**: When configured (non-empty), only commands matching at least one pattern are executed.
+- **Blacklist**: Command matching any pattern (searched anywhere in the command) is rejected.
+- **Whitelist**: When configured (non-empty), the **whole** command must fully match at
+  least one pattern (`re.fullmatch`). This prevents bypasses like `ls; rm -rf /` slipping
+  through a partially-anchored rule. Write patterns that cover the entire command, e.g.
+  `ls.*` or `(ls|df).*` rather than bare `ls|df`.
 - **Command template**: Wraps all commands. Use `<command>` as placeholder.
+- Filtering applies to agent-initiated commands (`ssh_run`, inline aliases). Internally
+  generated helper commands (mkdir/staging/etc.) are exempt but their path arguments are
+  shell-quoted and validated against traversal.
+
+> A regex blacklist is a guardrail, not a sandbox: shell-obfuscated commands can evade
+> it. For hard restrictions use the whitelist.
 
 ### Path Restrictions
 
@@ -260,8 +296,23 @@ server:
 ```
 
 - Empty (default): No restriction.
-- When set: Only paths under specified directories are allowed.
+- When set: Only paths under the specified directories are allowed, compared with a
+  directory boundary (`/allowed/dir` permits `/allowed/dir/x` but not `/allowed/dir-evil`).
+  Remote paths are normalised lexically (posixpath); local paths are resolved on the local filesystem.
 - Applies to both `upload` and `download`.
+
+### Sudo Mechanism
+
+Sudo runs commands via `sudo -S -p '' bash -c '<command>'`. The password is delivered
+over the SSH channel **stdin**, never in the remote command line (so it cannot be read
+from `ps`). The password must be configured (`sudo_password`, falling back to `password`).
+
+### Concurrency
+
+Commands on the same server execute concurrently over independent SSH channels — a
+long-running command (or a reconnecting host) never blocks another thread's command to
+the same server. Timeouts close the channel and report `code: -1` with a note that the
+remote process may still be running; recursive directory downloads stop at 48 levels.
 
 ## File Transfer: Upload + Download
 
@@ -376,11 +427,13 @@ free -h
 | | Password auth | Password login | `server.password` |
 | | Key auth | SSH key login (optional passphrase) | `server.key`, `server.key_password` |
 | | SOCKS5 proxy | Proxy first, auto-fallback to direct | `config.yaml` proxy / `server.proxy` |
-| | Connection pool | Auto-reuse, 60s keepalive | Global `pool.get(name)` |
+| | Host key verification | known_hosts verified before auth (tofu/strict/insecure) | `server.host_key_checking` |
+| | Connection pool | Auto-reuse, keepalive (default 15s) | Global `pool.get(name)` |
+| | Concurrent commands | Multiple commands per server on independent channels | Built-in (no per-server serialization) |
 | **Command Execution** | `run()` | Execute command, optional sudo, real-time streaming | `ssh_run` / CLI `run -s` |
 | | `run_alias()` | Execute predefined alias (streams output) | `ssh_alias.server.name` / CLI `alias` |
 | | Command template | Wrap all commands (e.g., auto cd) | `server.command_template` |
-| | Command filtering | Regex whitelist/blacklist | `server.blacklist` / `server.whitelist` |
+| | Command filtering | Blacklist search + whitelist fullmatch | `server.blacklist` / `server.whitelist` |
 | **Script Management** | `upload_script()` | Upload script | CLI `upload` |
 | | `run_script()` | Execute uploaded script | `ssh_run_script` / CLI `run-script` |
 | | `upload_all_scripts()` | Upload all scripts from alias definitions | CLI `upload-all` |
@@ -400,7 +453,9 @@ free -h
 | **MCP Tools** | Dynamic tools | Each alias auto-exposed as `ssh_alias.server.name` | Auto-generated at runtime |
 | | Tool discovery | `ssh_list_servers` / `ssh_list_aliases` | Static tools |
 | | Read/write markers | Tools marked readOnly/destructive | Auto-set |
-| **Security** | Command blacklist | Regex pattern blocks commands | `server.blacklist` |
-| | Command whitelist | Only allow matching commands | `server.whitelist` |
-| | Path restrictions | Restrict upload/download paths | `server.allowed_local_paths` / `server.allowed_remote_paths` |
+| **Security** | Command blacklist | Regex pattern blocks commands (search) | `server.blacklist` |
+| | Command whitelist | Only allow fully-matching commands (fullmatch) | `server.whitelist` |
+| | Argument shell-quoting | Template paths quoted per shell; traversal rejected | Built-in (`_cmd` / `_safe_relpath`) |
+| | Sudo stdin password | Password never appears in remote argv | Built-in (`sudo -S`) |
+| | Path restrictions | Restrict upload/download paths (directory-boundary match) | `server.allowed_local_paths` / `server.allowed_remote_paths` |
 | | Proxy error log | Proxy failures logged to file | `proxy_error.log` |
