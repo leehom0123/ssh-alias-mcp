@@ -103,6 +103,41 @@ def _repair_surrogateescaped_command(command: str) -> str:
     )
 
 
+def _repair_surrogateescaped_command(command: str) -> str:
+    """Restore UTF-8 text misdecoded by a Windows Chinese code page.
+
+    Valid Unicode is returned unchanged. Older Windows stdio bridges may have
+    decoded UTF-8 command bytes as GBK/CP936 with ``surrogateescape``; reverse
+    that conversion before Paramiko encodes the SSH command as UTF-8.
+    """
+    if not any(0xDC80 <= ord(char) <= 0xDCFF for char in command):
+        return command
+
+    encodings = []
+    if sys.platform == "win32":
+        import locale
+        encodings.append(locale.getpreferredencoding(False))
+    encodings.extend(("gbk", "cp936"))
+
+    seen = set()
+    for encoding in encodings:
+        key = encoding.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            repaired = command.encode(encoding, errors="surrogateescape").decode("utf-8")
+            repaired.encode("utf-8")
+            return repaired
+        except (LookupError, UnicodeError):
+            continue
+
+    raise ValueError(
+        "Command contains invalid surrogate-escaped text and could not be "
+        "restored as UTF-8"
+    )
+
+
 def _normalize_path(raw: str) -> str:
     """Normalize a path string for the current OS.
 
