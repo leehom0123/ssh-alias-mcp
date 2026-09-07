@@ -15,7 +15,10 @@ python cli.py <server> run "<command>" [-s] [-t sec]   # Execute a command (-s =
 python cli.py <server> run-script <name> [-s] [-t sec]  # Run an uploaded script (streams output)
 python cli.py <server> alias <name>                     # Run an alias (streams output, sudo in YAML)
 python cli.py <server> upload <local-path> [-r] [-s] [-n name] [-t sec]  # Upload script (-s = sudo install)
+python cli.py <server> upload-file <local> <remote> [-s] [-x] [-t sec]  # Upload one file to explicit path (-x = executable)
 python cli.py <server> download <remote> <local> [-s] [-p PATTERN] [-t sec]  # Download file/dir (-s = sudo read)
+python cli.py <server> download-file <remote> <local> [-s] [-t sec]  # Download one file to explicit path
+python cli.py <server> download-script <name> <local> [-s] [-t sec]  # Download script from scripts_dir
 python cli.py <server> upload-all [-s] [-t sec]         # Upload all alias scripts (-s = sudo)
 python cli.py <server> list-scripts [-s] [-t sec]       # List remote scripts (-s = list root-owned)
 python cli.py <server> list-aliases                      # List aliases (local, no SSH)
@@ -26,6 +29,11 @@ python cli.py <server> list-aliases                      # List aliases (local, 
 - `-s` / `--sudo` — Execute as root (requires `sudo_password`). Upload: stages via /tmp preserving owner/mode. Download: stages via /tmp + chown.
 - `-t` / `--timeout` SECS — Timeout in seconds (default: server `timeout` from YAML)
 
+Quoting: your **local shell** processes the command line first. Plain commands
+need no quotes (`run df -h`); characters the local shell would consume — `| > ; & * ?` —
+must be inside quotes to reach the remote shell, and `$`/backticks additionally need
+single quotes or `run -` (double quotes still expand them).
+
 Flags are parsed **from the tail** of the arguments after the subcommand only.
 Write them at the end so flags inside the command text survive:
 
@@ -34,12 +42,22 @@ python cli.py my-server run "grep -s ERROR app.log"        # inner -s kept
 python cli.py my-server run "grep ERROR app.log" -s        # trailing -s = sudo
 ```
 
+Commands with heavy `$`/quote usage (awk/sed one-liners) can be read from
+stdin instead of argv, via `run -` and a quoted heredoc:
+
+```bash
+python cli.py my-server run - <<'EOF'
+awk 'match($0,/req: [0-9]+/){print substr($0,RSTART+5,RLENGTH-5)}' log
+EOF
+```
+
 ## Per-Command Flags
 
 - `-n` / `--name` NAME — (upload) Custom script name on remote
 - `-r` / `--run` — (upload) Run script immediately after upload
 - `-p` / `--pattern` PAT — (download) Regex pattern to filter filenames
-- `--no-overwrite` — (download) Skip existing local files
+- `-x` / `--executable` — (upload-file) Set execute permission on Unix
+- `--no-overwrite` — (upload-file / download / download-file / download-script) Fail if the destination already exists
 - `--replace` — (update-server) Replace the complete config instead of recursively merging the patch
 
 ## Manage Server Configurations
@@ -84,6 +102,10 @@ python cli.py my-server upload ./fix.sh -r -s
 
 # Download with sudo
 python cli.py my-server download /var/log/secure ./secure.log -s
+
+# Upload/download single files to explicit paths
+python cli.py my-server upload-file ./config.json /etc/myapp/config.json -s
+python cli.py my-server download-file /etc/myapp/app.log ./app.log
 
 # List root-owned scripts
 python cli.py my-server list-scripts -s

@@ -34,11 +34,14 @@ python cli.py <server> alias deploy
 | `ssh_delete_server` | `server` | Delete a server config |
 | `ssh_list_aliases` | `server` | List quick-command aliases |
 | `ssh_list_scripts` | `server`, `sudo`(default false) | List uploaded scripts on remote |
-| `ssh_run` | `server`, `command`, `timeout`(default 60s), `sudo`(default false) | Execute a command |
+| `ssh_run` | `server`, `command`, `timeout`(default 300s), `sudo`(default false) | Execute a command |
 | `ssh_run_alias` | `server`, `alias_name` | Run an alias |
 | `ssh_run_script` | `server`, `script_name`, `timeout`(default 300s), `sudo`(default false) | Run an uploaded script |
 | `ssh_upload_script` | `server`, `local_path`, `script_name`(opt), `run_immediately`(default false), `timeout`(default 300s), `overwrite`(default true), `sudo`(default false) | Upload a script |
-| `ssh_download` | `server`, `remote_path`, `local_path`, `pattern`(opt), `timeout`(default 300s), `sudo`(default false) | Download file or directory |
+| `ssh_upload_file` | `server`, `local_path`, `remote_path`, `timeout`(default 300s), `overwrite`(default true), `sudo`(default false), `executable`(default false) | Upload one file to an explicit remote path |
+| `ssh_download` | `server`, `remote_path`, `local_path`, `pattern`(opt), `timeout`(default 300s), `overwrite`(default true), `sudo`(default false) | Download file or directory |
+| `ssh_download_file` | `server`, `remote_path`, `local_path`, `timeout`(default 300s), `overwrite`(default true), `sudo`(default false) | Download one file from an explicit remote path |
+| `ssh_download_script` | `server`, `script_name`, `local_path`, `timeout`(default 300s), `overwrite`(default true), `sudo`(default false) | Download one file from `scripts_dir` |
 | `ssh_upload_all_scripts` | `server`, `sudo`(default false) | Upload all scripts from alias definitions |
 | `ssh_alias.{server}.{name}` | — (auto-generated) | One-click alias execution |
 
@@ -49,6 +52,7 @@ python cli.py <server> alias deploy
 - **Host keys** — Verified before authentication; keys persist to `known_hosts` (see `host_key_checking` in REFERENCE.md)
 - **Dynamic alias tools** — MCP exposes aliases as `ssh_alias.{server}.{name}`
 - **Live stream output** — For real-time streaming, use CLI. See [CLI_USAGE.md](CLI_USAGE.md)
+- **Transfer reuse** — Script upload wraps generic file upload; script download wraps generic file download.
 - **Docker build real-time output** — `docker build` uses buildkit JSON output by default. Add `--progress=plain` for real-time output. NEVER pipe to `tail` (e.g. `| tail -5`) as it buffers until command completes. Example: `docker build --progress=plain -t myimage .`
 
 ## Shell Support

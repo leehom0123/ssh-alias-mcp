@@ -18,7 +18,7 @@
 │  ├── 连接池 (连接复用，默认 15s 保活)                  │
 │  ├── 主机密钥校验 (known_hosts, tofu/strict)          │
 │  ├── SOCKS5 代理 + 直连自动回退                        │
-│  └── SFTP 脚本上传与下载                              │
+│  └── SFTP 通用文件/目录传输（脚本传输为其包装）          │
 └──────────────┬───────────────────────────────────────┘
                │ SSH
 ┌──────────────▼───────────────────────────────────────┐
@@ -253,6 +253,25 @@ aliases:                      # 追加 — 本地别名胜承继承的别名
 | 目录操作 | ✅ | ✅ | ✅ |
 | 文件上传/下载 | ✅ | ✅ | ✅ |
 
+## 文件与脚本传输
+
+`upload_file()` / `ssh_upload_file` 是通用的单文件上传能力：需要同时提供本地路径和远程目标路径。
+`download()` / `ssh_download` 已是通用下载能力，支持单文件及递归目录下载；`download_file()` / `ssh_download_file` 是其单文件入口，与 `upload_file()` 对称。
+
+脚本工具不另行实现传输：
+
+- `upload_script()` 将远程目标限定为 `scripts_dir/<script_name>`，调用 `upload_file()`，然后可选地执行脚本；
+- `download_script()` 将远程来源限定为 `scripts_dir/<script_name>`，调用 `download_file()`。
+
+CLI 对应命令：
+
+```bash
+python cli.py my-server upload-file ./config.json /etc/myapp/config.json -s
+python cli.py my-server download /var/log/app.log ./app.log
+python cli.py my-server download-script deploy.sh ./deploy.sh
+python cli.py my-server download-file /etc/myapp/app.log ./app.log
+```
+
 ## 安全：命令过滤 + 路径限制
 
 ### 命令过滤
@@ -433,11 +452,13 @@ free -h
 | | `list_scripts()` | 列出远程已上传脚本 | CLI `list-scripts` |
 | | 上传后执行 | `upload_script(run_immediately=True)` | `ssh_upload_script` / CLI `upload -r` |
 | **文件传输** | `download()` | 下载单个文件或递归目录 | `ssh_download` / CLI `download` |
+| | `upload_file()` | 上传单个本地文件到指定的远程路径 | `ssh_upload_file` / CLI `upload-file` |
+| | `download_file()` | 下载单个远程文件到指定的本地路径（委托 `download()`） | `ssh_download_file` / CLI `download-file` |
 | | 下载过滤 | 正则表达式过滤文件名 | `pattern` 参数 |
 | | 下载计数 | 返回目录下载的文件数 | `count` 字段 |
 | | 下载 sudo | 读取 root 拥有的文件（通过 /tmp 暂存） | `sudo: true` 参数 |
-| | 下载覆盖控制 | 跳过已存在的本地文件 | `overwrite` 参数（默认：true） |
-| | 上传覆盖控制 | 跳过已存在的远程脚本 | `overwrite` 参数（默认：true） |
+| | 下载覆盖控制 | 本地目标已存在时报错失败（单文件与目录下载均适用） | `overwrite` 参数（默认：true） |
+| | 上传覆盖控制 | 远程目标已存在时报错失败（`upload_all_scripts` 则跳过已存在文件） | `overwrite` 参数（默认：true） |
 | | 路径限制 | 限制上传/下载路径 | `server.allowed_local_paths` / `server.allowed_remote_paths` |
 | **别名系统** | 内联别名 | 直接执行命令字符串 | `aliases[].inline` |
 | | 脚本别名 | 上传 + 执行脚本文件 | `aliases[].script` |

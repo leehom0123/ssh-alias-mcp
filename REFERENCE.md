@@ -18,7 +18,7 @@
 │  ├── ConnectionPool (connection reuse, keepalive)    │
 │  ├── Host key verification (known_hosts, tofu/strict)│
 │  ├── SOCKS5 proxy + direct auto-fallback             │
-│  └── SFTP script upload & download                   │
+│  └── SFTP file/dir upload & download (scripts wrap)  │
 └──────────────┬───────────────────────────────────────┘
                │ SSH
 ┌──────────────▼───────────────────────────────────────┐
@@ -440,11 +440,13 @@ free -h
 | | `list_scripts()` | List remote uploaded scripts | CLI `list-scripts` |
 | | Upload then run | `upload_script(run_immediately=True)` | `ssh_upload_script` / CLI `upload -r` |
 | **File Transfer** | `download()` | Download single file or recursive directory | `ssh_download` / CLI `download` |
+| | `upload_file()` | Upload one local file to an explicit remote path | `ssh_upload_file` / CLI `upload-file` |
+| | `download_file()` | Download one remote file to an explicit local path (delegates to `download()`) | `ssh_download_file` / CLI `download-file` |
 | | Download filtering | Regex filter filenames | `pattern` parameter |
 | | Download count | Return file count for directory download | `count` field |
 | | Download sudo | Read root-owned files (via /tmp staging) | `sudo: true` parameter |
-| | Download overwrite control | Skip existing local files | `overwrite` parameter (default: true) |
-| | Upload overwrite control | Skip existing remote scripts | `overwrite` parameter (default: true) |
+| | Download overwrite control | Fail if the local destination exists (both single-file and directory downloads) | `overwrite` parameter (default: true) |
+| | Upload overwrite control | Fail if the remote destination exists (`upload_all_scripts` skips existing instead) | `overwrite` parameter (default: true) |
 | | Path restrictions | Restrict upload/download paths | `server.allowed_local_paths` / `server.allowed_remote_paths` |
 | **Alias System** | Inline alias | Execute command string directly | `aliases[].inline` |
 | | Script alias | Upload + execute script file | `aliases[].script` |
