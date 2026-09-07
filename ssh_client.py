@@ -68,47 +68,52 @@ def _safe_relpath(raw, field: str) -> str:
     return "/".join(parts)
 
 
-def _repair_surrogateescaped_command(command: str) -> str:
-    """Restore UTF-8 text misdecoded by a Windows Chinese code page.
+def _resolve_proxy(server_proxy: Optional[dict],
+                   global_proxy_cfg: dict) -> Optional[dict]:
+    """Resolve the effective proxy for a server.
 
-    Valid Unicode is returned unchanged. Older Windows stdio bridges may have
-    decoded UTF-8 command bytes as GBK/CP936 with ``surrogateescape``; reverse
-    that conversion before Paramiko encodes the SSH command as UTF-8.
+    Per-server proxy wins; otherwise use the global SOCKS5 proxy when it is
+    enabled. Shared by ``SSHConnection.__init__`` and ``_connect_once`` so
+    both agree on the precedence rules.
     """
-    if not any(0xDC80 <= ord(char) <= 0xDCFF for char in command):
-        return command
+    if server_proxy:
+        return dict(server_proxy)
+    if global_proxy_cfg.get("enabled"):
+        return {
+            "host": global_proxy_cfg.get("host", "127.0.0.1"),
+            "port": global_proxy_cfg.get("port", 1080),
+        }
+    return None
 
-    encodings = []
-    if sys.platform == "win32":
-        import locale
-        encodings.append(locale.getpreferredencoding(False))
-    encodings.extend(("gbk", "cp936"))
 
-    seen = set()
-    for encoding in encodings:
-        key = encoding.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        try:
-            repaired = command.encode(encoding, errors="surrogateescape").decode("utf-8")
-            repaired.encode("utf-8")
-            return repaired
-        except (LookupError, UnicodeError):
-            continue
+class SSHOperationError(OSError):
+    """A remote operation failed, with enough context for an MCP response."""
 
-    raise ValueError(
-        "Command contains invalid surrogate-escaped text and could not be "
-        "restored as UTF-8"
+
+def _operation_failure(operation: str, target: str, timeout: float,
+                       exc: Exception) -> SSHOperationError:
+    """Turn low-level socket/Paramiko exceptions into actionable diagnostics."""
+    is_timeout = isinstance(exc, (TimeoutError, socket.timeout))
+    kind = "timed out" if is_timeout else "failed"
+    detail = str(exc).strip() or type(exc).__name__
+    return SSHOperationError(
+        f"SSH {operation} {kind} for {target} after {timeout} seconds "
+        f"({type(exc).__name__}: {detail})"
     )
 
 
 def _repair_surrogateescaped_command(command: str) -> str:
-    """Restore UTF-8 text misdecoded by a Windows Chinese code page.
+    """Restore UTF-8 text that a Windows code page decoded with surrogateescape.
 
-    Valid Unicode is returned unchanged. Older Windows stdio bridges may have
-    decoded UTF-8 command bytes as GBK/CP936 with ``surrogateescape``; reverse
-    that conversion before Paramiko encodes the SSH command as UTF-8.
+    MCP arguments should already be valid Unicode. Some Windows stdio bridges,
+    however, decode UTF-8 command bytes with the active ANSI code page and use
+    ``surrogateescape`` for undecodable bytes. The resulting string contains
+    low surrogates and Paramiko cannot encode it as UTF-8. Re-encoding with the
+    same Windows code page reconstructs the original bytes.
+
+    Valid Unicode commands are returned unchanged. A command containing low
+    surrogates that cannot be repaired is rejected instead of being silently
+    altered or sent to the wrong remote shell.
     """
     if not any(0xDC80 <= ord(char) <= 0xDCFF for char in command):
         return command
@@ -339,14 +344,8 @@ class SSHConnection:
         }
 
         # Proxy config: per-server takes priority, then global fallback
-        self.proxy = cfg.get("proxy")
-        if not self.proxy:
-            proxy_cfg = global_config.get("proxy", {})
-            if proxy_cfg.get("enabled"):
-                self.proxy = {
-                    "host": proxy_cfg.get("host", "127.0.0.1"),
-                    "port": proxy_cfg.get("port", 1080)
-                }
+        self.proxy = _resolve_proxy(cfg.get("proxy"),
+                                    global_config.get("proxy", {}) or {})
 
         self._client: Optional[paramiko.SSHClient] = None
         self._last_used = 0
@@ -365,27 +364,21 @@ class SSHConnection:
                 return
             try:
                 self._connect_once()
-            except Exception:
+            except Exception as exc:
                 self._record_connect_failure()
-                raise
+                raise _operation_failure(
+                    "connection", f"{self.user}@{self.host}:{self.port}",
+                    self.timeout, exc,
+                ) from exc
             self._connect_failures = 0
             self._reconnect_wakeup.set()
 
     def _connect_once(self):
         """Perform one proxy/direct connection cycle."""
-        # Dynamically reload proxy config
-        current_proxy_cfg = load_global_config().get("proxy", {})
-        if current_proxy_cfg.get("enabled"):
-            proxy = {
-                "host": current_proxy_cfg.get("host", "127.0.0.1"),
-                "port": current_proxy_cfg.get("port", 1080)
-            }
-            if self.proxy:
-                proxy = self.proxy
-        elif self.proxy:
-            proxy = self.proxy
-        else:
-            proxy = None
+        # Per-server proxy wins; global proxy config is re-read live so
+        # toggling proxy.enabled in config.yaml applies to new connections.
+        proxy = _resolve_proxy(self.proxy,
+                               load_global_config().get("proxy", {}) or {})
 
         if self._client:
             self._client.close()
@@ -570,14 +563,9 @@ class SSHConnection:
 
     def _connect_proxy_with(self, proxy: dict):
         """Connect via SOCKS5 proxy"""
-        import socks
-        sock = socks.socksocket()
+        sock = self._make_socket(proxy)
         transport = None
         try:
-            sock.set_proxy(socks.SOCKS5, proxy["host"], int(proxy["port"]))
-            sock.settimeout(self.timeout)
-            sock.connect((self.host, self.port))
-
             c = self._make_client()
             transport = paramiko.Transport(sock)
             kw = self._get_auth()
@@ -697,6 +685,7 @@ class SSHConnection:
         try:
             # Check if (staged) remote is a directory
             sftp = paramiko.SFTPClient.from_transport(self._client.get_transport())
+            sftp.get_channel().settimeout(timeout)
             remote_attr = sftp.stat(actual_remote)
             is_dir = (remote_attr.st_mode & 0o170000) == 0o040000
 
@@ -720,8 +709,15 @@ class SSHConnection:
                 }
 
             # Directory download
+            if not overwrite and Path(local_path).exists():
+                raise FileExistsError(f"Local path already exists: {local_path}")
             return self._download_dir(sftp, actual_remote, local_path, pattern, timeout,
                                       display_remote=remote_path)
+        except (TimeoutError, socket.timeout) as exc:
+            raise _operation_failure(
+                "SFTP download", f"{remote_path} from {self.user}@{self.host}:{self.port}",
+                timeout, exc,
+            ) from exc
         finally:
             if tmp_stage:
                 self.run(self._cmd("rm_dir", path=tmp_stage), timeout=15,
@@ -958,6 +954,57 @@ class SSHConnection:
             ).strip("\n")
         return self._strip_sudo_noise(result) if sudo else result
 
+    def upload_file(self, local_path: str, remote_path: str, timeout: int = 300,
+                    overwrite: bool = True, sudo: bool = False,
+                    executable: bool = False) -> dict:
+        """Upload one local file to an explicit remote path via SFTP."""
+        self.connect()
+        if self._path_blocked(local_path, "local"):
+            raise ValueError(f"Local path not allowed: {local_path}")
+        if self._path_blocked(remote_path, "remote"):
+            raise ValueError(f"Remote path not allowed: {remote_path}")
+        source = Path(local_path)
+        if not source.is_file():
+            raise FileNotFoundError(f"Local file not found: {local_path}")
+        if not overwrite:
+            check = self.run(self._cmd("file_exists", path=remote_path), timeout=5,
+                             sudo=sudo, internal=True)
+            if check["code"] == 0:
+                raise FileExistsError(f"Remote file already exists: {remote_path}")
+        remote_parent = str(Path(remote_path).parent)
+        self.run(self._cmd("mkdir", path=remote_parent), timeout=10, sudo=sudo,
+                 internal=True)
+        try:
+            sftp = paramiko.SFTPClient.from_transport(self._client.get_transport())
+            sftp.get_channel().settimeout(timeout)
+            if sudo:
+                tmp_prefix = self._cmd("tmp_prefix")
+                tmp_path = f"{tmp_prefix}/.staging_{uuid.uuid4().hex[:8]}_{source.name}"
+                sftp.put(str(source), tmp_path)
+                sftp.close()
+                installed = self.run(
+                    self._cmd("install", tmp=tmp_path, target=remote_path),
+                    timeout=15, sudo=True, internal=True,
+                )
+                if installed["code"] != 0:
+                    return installed
+                # The ``install`` template already applies the ownership/mode
+                # semantics (preserve on overwrite, parent-owner + 755 on
+                # create); a follow-up chmod would clobber the preserved mode.
+            else:
+                sftp.put(str(source), remote_path)
+                if executable and self._is_unix():
+                    sftp.chmod(remote_path, 0o755)
+                sftp.close()
+        except (TimeoutError, socket.timeout) as exc:
+            raise _operation_failure(
+                "SFTP upload", f"{local_path} -> {remote_path}", timeout, exc,
+            ) from exc
+        return {
+            "stdout": f"Uploaded {local_path} -> {remote_path}\n",
+            "stderr": "", "code": 0, "remote_path": remote_path,
+        }
+
     def upload_script(self, local_path: str, script_name: str = None,
                       run_immediately: bool = False, timeout: int = 300,
                       overwrite: bool = True, sudo: bool = False) -> dict:
@@ -965,50 +1012,15 @@ class SSHConnection:
 
         Args:
             sudo: if True, write the script as root via stage-via-/tmp
-                  (SFTP -> tmp -> sudo mv -> chmod). When run_immediately=True,
-                  also execute the script as root.
+                  (SFTP -> tmp -> sudo install, which sets owner/mode).
+                  When run_immediately=True, also execute the script as root.
         """
-        self.connect()
-
-        if not Path(local_path).exists():
-            raise FileNotFoundError(f"Local script not found: {local_path}")
-        script_content = Path(local_path).read_bytes()
-
         if not script_name:
             script_name = Path(local_path).name
         script_name = _safe_relpath(script_name, "script_name")
         remote_path = f"{self.scripts_dir}/{script_name}"
-
-        if not overwrite:
-            check = self.run(self._cmd("file_exists", path=remote_path),
-                             timeout=5, sudo=sudo, internal=True)
-            if check["code"] == 0:
-                raise FileExistsError(f"Remote script already exists: {remote_path}")
-
-        self.run(self._cmd("mkdir", path=self.scripts_dir), timeout=10,
-                 sudo=sudo, internal=True)
-
-        if sudo:
-            tmp_prefix = self._cmd("tmp_prefix")
-            tmp_path = f"{tmp_prefix}/.staging_{uuid.uuid4().hex[:8]}_{Path(script_name).name}"
-            sftp = paramiko.SFTPClient.from_transport(self._client.get_transport())
-            sftp.putfo(io.BytesIO(script_content), tmp_path)
-            sftp.close()
-            self.run(self._cmd("install", tmp=tmp_path, target=remote_path),
-                     timeout=15, sudo=True, internal=True)
-        else:
-            sftp = paramiko.SFTPClient.from_transport(self._client.get_transport())
-            sftp.putfo(io.BytesIO(script_content), remote_path)
-            if self._is_unix():
-                sftp.chmod(remote_path, 0o755)
-            sftp.close()
-
-        result = {
-            "stdout": f"Script uploaded to {remote_path}\n",
-            "stderr": "",
-            "code": 0,
-            "remote_path": remote_path
-        }
+        result = self.upload_file(local_path, remote_path, timeout, overwrite, sudo, executable=True)
+        result["stdout"] = f"Script uploaded to {remote_path}\n" if result["code"] == 0 else result["stdout"]
 
         if run_immediately:
             run_cmd = self._cmd("run_script", path=remote_path)
@@ -1019,6 +1031,27 @@ class SSHConnection:
             result["code"] = run_result["code"]
 
         return result
+
+    def download_file(self, remote_path: str, local_path: str, timeout: int = 300,
+                      overwrite: bool = True, sudo: bool = False) -> dict:
+        """Download one remote file to an explicit local path via SFTP.
+
+        Counterpart of upload_file: same allow-list checks, sudo staging
+        and timeout diagnostics, all provided by the download() primitive.
+        """
+        return self.download(
+            remote_path, local_path, timeout=timeout,
+            overwrite=overwrite, sudo=sudo,
+        )
+
+    def download_script(self, script_name: str, local_path: str, timeout: int = 300,
+                        overwrite: bool = True, sudo: bool = False) -> dict:
+        """Download a script from scripts_dir, reusing the single-file downloader."""
+        script_name = _safe_relpath(script_name, "script_name")
+        return self.download_file(
+            f"{self.scripts_dir}/{script_name}", local_path, timeout=timeout,
+            overwrite=overwrite, sudo=sudo,
+        )
 
     def list_scripts(self, sudo: bool = False) -> dict:
         """List uploaded scripts on the remote server"""
@@ -1101,11 +1134,6 @@ class SSHConnection:
         if not script_aliases:
             return {"stdout": "No alias with 'script' field found.\n", "stderr": "", "code": 0}
 
-        self.connect()
-        self.run(self._cmd("mkdir", path=self.scripts_dir), timeout=10,
-                 sudo=sudo, internal=True)
-
-        sftp = paramiko.SFTPClient.from_transport(self._client.get_transport())
         msg, fail = [], []
         seen_hashes = {}
         base = self._scripts_base()
@@ -1126,60 +1154,24 @@ class SSHConnection:
                 remote = f"{self.scripts_dir}/{_safe_relpath(rel, 'script')}"
             else:
                 remote = f"{self.scripts_dir}/external/{_safe_relpath(remote_name, 'script')}"
-            remote_parent = str(Path(remote).parent)
-            self.run(self._cmd("mkdir", path=remote_parent), timeout=10,
-                     sudo=sudo, internal=True)
-            self._upload_single(sftp, src, remote, sudo, a, msg, fail, overwrite)
-        sftp.close()
+            try:
+                result = self.upload_file(
+                    str(src), remote, timeout=300, overwrite=overwrite,
+                    sudo=sudo, executable=True,
+                )
+                if result["code"] == 0:
+                    msg.append(f"  + {remote}")
+                else:
+                    fail.append(
+                        f"  x {a['script']}: upload failed: "
+                        f"{result.get('stderr', result.get('stdout', 'unknown error'))[:80]}"
+                    )
+            except Exception as exc:
+                fail.append(f"  x {a['script']}: {exc}")
 
         out = f"Upload done ({len(msg)}/{len(script_aliases)})\n"
         out += "\n".join(msg + fail) + "\n"
         return {"stdout": out, "stderr": "", "code": 0 if not fail else 1}
-
-    def _upload_single(self, sftp, src: Path, remote: str, sudo: bool,
-                        alias: dict, msg: list, fail: list, overwrite: bool = True):
-        """Upload a single script file via SFTP.
-
-        Args:
-            overwrite: if False, skip files that already exist on remote.
-        """
-        try:
-            # Check if file exists and overwrite is False
-            if not overwrite:
-                try:
-                    sftp.stat(remote)
-                    msg.append(f"  = {remote} (skipped, already exists)")
-                    return
-                except Exception:
-                    pass  # File doesn't exist, proceed with upload
-            remote_dir = str(Path(remote).parent)
-            # Handle Windows paths (C:/...) and Unix paths (/...)
-            if "/" in remote_dir:
-                parts = remote_dir.split("/")
-                # Preserve drive letter if present (e.g. C:)
-                start = 1 if parts and len(parts[0]) == 2 and parts[0][1] == ":" else 0
-                for i in range(start + 1, len(parts) + 1):
-                    p = "/".join(parts[:i])
-                    try:
-                        sftp.mkdir(p)
-                    except Exception:
-                        pass
-            if sudo:
-                tmp_prefix = self._cmd("tmp_prefix")
-                tmp_path = f"{tmp_prefix}/.staging_{uuid.uuid4().hex[:8]}_{Path(remote).name}"
-                sftp.put(str(src), tmp_path)
-                mv = self.run(self._cmd("install", tmp=tmp_path, target=remote),
-                              timeout=15, sudo=True, internal=True)
-                if mv["code"] != 0:
-                    fail.append(f"  x {alias['script']}: sudo install failed: {mv['stderr'][:80]}")
-                    return
-            else:
-                sftp.put(str(src), remote)
-                if self._is_unix():
-                    sftp.chmod(remote, 0o755)
-            msg.append(f"  + {remote}")
-        except Exception as e:
-            fail.append(f"  x {alias['script']}: {e}")
 
     def run_alias(self, name: str, stream_cb: Any = None) -> dict:
         """Run an alias-defined quick command"""
@@ -1264,7 +1256,7 @@ class ConnectionPool:
         its own transport). The returned connection supports concurrent
         commands on independent channels.
         """
-        key = self._to_key(server_name)
+        key, _ = self._config_target(server_name)
         with self._lock:
             if key in self._pool:
                 return self._pool[key]
@@ -1329,7 +1321,8 @@ class ConnectionPool:
         self._discard(key)
         return {"name": key, "path": str(config_path), "deleted": True}
 
-    def _config_target(self, server_name: str):
+    @staticmethod
+    def _config_target(server_name: str):
         if not isinstance(server_name, str):
             raise ValueError("Server name must be a string")
         name = server_name.strip()
@@ -1378,41 +1371,47 @@ class ConnectionPool:
         return merged
 
     @staticmethod
-    def _write_config(config_path: Path, config: dict, mode: int = None):
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = config_path.with_name(f".{config_path.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            text = yaml.safe_dump(
-                config,
-                allow_unicode=True,
-                sort_keys=False,
-                default_flow_style=False,
-            )
-            temp_path.write_text(text, encoding="utf-8")
-            file_mode = mode
-            if file_mode is None:
-                file_mode = (
-                    config_path.stat().st_mode & 0o777
-                    if config_path.exists()
-                    else 0o600
-                )
-            temp_path.chmod(file_mode)
-            os.replace(temp_path, config_path)
-        finally:
-            if temp_path.exists():
-                temp_path.unlink()
-
-    @staticmethod
-    def _copy_config_file(source_path: Path, target_path: Path):
+    def _atomic_write(target_path: Path, write_fn, mode: int):
+        """Write through a temp file and atomically replace ``target_path``."""
         target_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = target_path.with_name(f".{target_path.name}.{uuid.uuid4().hex}.tmp")
         try:
-            temp_path.write_bytes(source_path.read_bytes())
-            temp_path.chmod(source_path.stat().st_mode & 0o777)
+            write_fn(temp_path)
+            temp_path.chmod(mode)
             os.replace(temp_path, target_path)
         finally:
             if temp_path.exists():
                 temp_path.unlink()
+
+    @classmethod
+    def _write_config(cls, config_path: Path, config: dict, mode: int = None):
+        text = yaml.safe_dump(
+            config,
+            allow_unicode=True,
+            sort_keys=False,
+            default_flow_style=False,
+        )
+        file_mode = mode
+        if file_mode is None:
+            file_mode = (
+                config_path.stat().st_mode & 0o777
+                if config_path.exists()
+                else 0o600
+            )
+        cls._atomic_write(
+            config_path,
+            lambda temp: temp.write_text(text, encoding="utf-8"),
+            file_mode,
+        )
+
+    @classmethod
+    def _copy_config_file(cls, source_path: Path, target_path: Path):
+        data = source_path.read_bytes()
+        cls._atomic_write(
+            target_path,
+            lambda temp: temp.write_bytes(data),
+            source_path.stat().st_mode & 0o777,
+        )
 
     def _discard(self, key: str):
         with self._lock:
@@ -1507,9 +1506,10 @@ class ConnectionPool:
             srv["index"] = i
         return servers
 
-    @staticmethod
-    def _to_key(name: str) -> str:
-        return name.replace(".yml", "").replace(".yaml", "").strip().lower()
+    @classmethod
+    def _to_key(cls, name: str) -> str:
+        """Normalise a server name to its pool key (see ``_config_target``)."""
+        return cls._config_target(name)[0]
 
 
 # Global connection pool instance
