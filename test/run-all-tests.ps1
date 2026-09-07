@@ -1,5 +1,6 @@
 # SSH Alias MCP Full Test Suite
 # 4 YAML configs × 3 client environments = 12 test combinations
+# Each combination runs the unified live suite (test/test_live_e2e.py) under pytest.
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -30,38 +31,41 @@ function Switch-OpenSSHShell {
     }
 }
 
-# Run a single test
+# Run the live pytest suite for one YAML config / client environment combination
 function Run-Test {
     param(
         [string]$Number,
         [string]$Yaml,
         [string]$Client,
-        [string]$TestScript,
         [bool]$IsWSL = $false,
         [bool]$IsCmd = $false
     )
-    
+
     Write-Host ""
     Write-Host "--- Test $($Number): $($Yaml) x $($Client) ---" -ForegroundColor Cyan
-    
+
     if ($IsWSL) {
-        $wslScript = $TestScript -replace "\\", "/"
-        $cmd = "source ~/miniconda3/etc/profile.d/conda.sh && conda activate ts && SSH_TEST_SERVER=$($Yaml) python /mnt/d/repos/2026/ssh-alias-mcp/$($wslScript)"
+        $wslRoot = "/mnt/" + $RootDir.Substring(0, 1).ToLower() + ($RootDir.Substring(2) -replace "\\", "/")
+        $cmd = "source ~/miniconda3/etc/profile.d/conda.sh && conda activate ts && cd $($wslRoot) && SSH_TEST_SERVER=$($Yaml) python -m pytest test/test_live_e2e.py -m live -q"
         wsl -d Ubuntu-24.04 -e bash -c $cmd
         $exitCode = $LASTEXITCODE
     }
     elseif ($IsCmd) {
-        $cmd = "set SSH_TEST_SERVER=$($Yaml) && python $($RootDir)\$($TestScript)"
+        $cmd = "set SSH_TEST_SERVER=$($Yaml) && python -m pytest test\test_live_e2e.py -m live -q"
+        Push-Location $RootDir
         cmd /c $cmd
         $exitCode = $LASTEXITCODE
+        Pop-Location
     }
     else {
         $env:SSH_TEST_SERVER = $Yaml
-        python "$($RootDir)\$($TestScript)"
+        Push-Location $RootDir
+        python -m pytest test\test_live_e2e.py -m live -q
         $exitCode = $LASTEXITCODE
+        Pop-Location
         Remove-Item env:SSH_TEST_SERVER -ErrorAction SilentlyContinue
     }
-    
+
     if ($exitCode -eq 0) {
         Write-Pass "Test $($Number) passed"
         return $true
@@ -80,36 +84,36 @@ Write-Host ""
 Write-Host "========== YAML 1: Remote Server (port forwarding) ==========" -ForegroundColor Green
 # No OpenSSH switch needed (connects to remote server via port forwarding)
 
-if (Run-Test -Number 1 -Yaml "test-win-bash" -Client "PowerShell" -TestScript "test\test_bash.py") { $passed++ } else { $failed++ }
-if (Run-Test -Number 2 -Yaml "test-win-bash" -Client "cmd" -TestScript "test\test_bash.py" -IsCmd:$true) { $passed++ } else { $failed++ }
-if (Run-Test -Number 3 -Yaml "test-win-bash" -Client "WSL bash" -TestScript "test\test_bash.py" -IsWSL:$true) { $passed++ } else { $failed++ }
+if (Run-Test -Number 1 -Yaml "test-win-bash" -Client "PowerShell") { $passed++ } else { $failed++ }
+if (Run-Test -Number 2 -Yaml "test-win-bash" -Client "cmd" -IsCmd:$true) { $passed++ } else { $failed++ }
+if (Run-Test -Number 3 -Yaml "test-win-bash" -Client "WSL bash" -IsWSL:$true) { $passed++ } else { $failed++ }
 
 # ===== YAML 2: PowerShell server =====
 Write-Host ""
 Write-Host "========== YAML 2: PowerShell Server ==========" -ForegroundColor Green
 Switch-OpenSSHShell -ShellPath "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 
-if (Run-Test -Number 4 -Yaml "test-powershell" -Client "PowerShell" -TestScript "test\test_powershell.py") { $passed++ } else { $failed++ }
-if (Run-Test -Number 5 -Yaml "test-powershell" -Client "cmd" -TestScript "test\test_powershell.py" -IsCmd:$true) { $passed++ } else { $failed++ }
-if (Run-Test -Number 6 -Yaml "test-powershell" -Client "WSL bash" -TestScript "test\test_powershell.py" -IsWSL:$true) { $passed++ } else { $failed++ }
+if (Run-Test -Number 4 -Yaml "test-powershell" -Client "PowerShell") { $passed++ } else { $failed++ }
+if (Run-Test -Number 5 -Yaml "test-powershell" -Client "cmd" -IsCmd:$true) { $passed++ } else { $failed++ }
+if (Run-Test -Number 6 -Yaml "test-powershell" -Client "WSL bash" -IsWSL:$true) { $passed++ } else { $failed++ }
 
 # ===== YAML 3: Cmd server =====
 Write-Host ""
 Write-Host "========== YAML 3: Cmd Server ==========" -ForegroundColor Green
 Switch-OpenSSHShell -ShellPath "C:\Windows\System32\cmd.exe"
 
-if (Run-Test -Number 7 -Yaml "test-cmd" -Client "PowerShell" -TestScript "test\test_cmd.py") { $passed++ } else { $failed++ }
-if (Run-Test -Number 8 -Yaml "test-cmd" -Client "cmd" -TestScript "test\test_cmd.py" -IsCmd:$true) { $passed++ } else { $failed++ }
-if (Run-Test -Number 9 -Yaml "test-cmd" -Client "WSL bash" -TestScript "test\test_cmd.py" -IsWSL:$true) { $passed++ } else { $failed++ }
+if (Run-Test -Number 7 -Yaml "test-cmd" -Client "PowerShell") { $passed++ } else { $failed++ }
+if (Run-Test -Number 8 -Yaml "test-cmd" -Client "cmd" -IsCmd:$true) { $passed++ } else { $failed++ }
+if (Run-Test -Number 9 -Yaml "test-cmd" -Client "WSL bash" -IsWSL:$true) { $passed++ } else { $failed++ }
 
 # ===== YAML 4: WSL Bash server =====
 Write-Host ""
 Write-Host "========== YAML 4: WSL Bash Server ==========" -ForegroundColor Green
 Switch-OpenSSHShell -ShellPath "C:\WINDOWS\system32\bash.exe"
 
-if (Run-Test -Number 10 -Yaml "test-local-bash" -Client "PowerShell" -TestScript "test\test_bash.py") { $passed++ } else { $failed++ }
-if (Run-Test -Number 11 -Yaml "test-local-bash" -Client "cmd" -TestScript "test\test_bash.py" -IsCmd:$true) { $passed++ } else { $failed++ }
-if (Run-Test -Number 12 -Yaml "test-local-bash" -Client "WSL bash" -TestScript "test\test_bash.py" -IsWSL:$true) { $passed++ } else { $failed++ }
+if (Run-Test -Number 10 -Yaml "test-local-bash" -Client "PowerShell") { $passed++ } else { $failed++ }
+if (Run-Test -Number 11 -Yaml "test-local-bash" -Client "cmd" -IsCmd:$true) { $passed++ } else { $failed++ }
+if (Run-Test -Number 12 -Yaml "test-local-bash" -Client "WSL bash" -IsWSL:$true) { $passed++ } else { $failed++ }
 
 # Restore default
 Write-Host ""

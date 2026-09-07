@@ -25,6 +25,8 @@ Thumbs.db
 # Project specific
 .omc/
 proxy_error.log
+known_hosts
+.pytest_cache/
 
 # Server configs (contains credentials — DO NOT COMMIT)
 servers/
