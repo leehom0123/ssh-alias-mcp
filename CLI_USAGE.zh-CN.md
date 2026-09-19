@@ -115,3 +115,4 @@ python cli.py my-server list-scripts -s
 
 - **sudo** — 使用 `run` 配合 `sudo: true`，不要在 `run` 中内联 `sudo -S`
 - **Docker 权限** — 如果用户不在 `docker` 组中，在别名上设置 `sudo: true`
+- **Git-Bash 路径** — 从 Git-Bash 调用时远端 POSIX 路径按原样送达，CLI 自己处理 MSYS 重写，无需 `MSYS2_ARG_CONV_EXCL` workaround。

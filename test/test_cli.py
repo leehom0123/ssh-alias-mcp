@@ -513,3 +513,81 @@ def test_run_dash_empty_stdin_is_error(monkeypatch, stub_conn, capsys):
     assert code == 2
     assert "Empty command" in capsys.readouterr().err
     assert stub_conn.calls == []
+
+
+# ---------------------------------------------------------------------------
+# unmangle_msys_argv: Git-Bash rewrites look-like-POSIX argv entries before
+# the native interpreter sees them (remote paths pick up the msys root).
+# ---------------------------------------------------------------------------
+
+class _Probe:
+    def __init__(self, stdout, returncode=0):
+        self.stdout = stdout
+        self.returncode = returncode
+
+
+def test_unmangle_strips_gitbash_root_from_remote_path(monkeypatch):
+    monkeypatch.setattr(ssh_client.sys, "platform", "win32")
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    monkeypatch.setattr(
+        ssh_client.subprocess, "run",
+        lambda *a, **k: _Probe("C:/Program Files/Git/msys_argv_probe_zxk\n"),
+    )
+    argv = ["cli.py", "srv", "upload-file", "D:/repos/f.bin",
+            "C:/Program Files/Git/home/bit/f.bin", "-t", "120"]
+    assert ssh_client.unmangle_msys_argv(argv) == [
+        "cli.py", "srv", "upload-file", "D:/repos/f.bin",
+        "/home/bit/f.bin", "-t", "120",
+    ]
+
+
+def test_unmangle_leaves_msys_drive_form_local_paths_alone(monkeypatch):
+    monkeypatch.setattr(ssh_client.sys, "platform", "win32")
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    monkeypatch.setattr(
+        ssh_client.subprocess, "run",
+        lambda *a, **k: _Probe("C:/Program Files/Git/msys_argv_probe_zxk\n"),
+    )
+    argv = ["cli.py", "srv", "upload-file", "C:/Users/li/f.bin", "/home/x"]
+    assert ssh_client.unmangle_msys_argv(argv) == argv
+
+
+def test_unmangle_noop_without_msystem_and_skips_probe(monkeypatch):
+    monkeypatch.setattr(ssh_client.sys, "platform", "win32")
+    monkeypatch.delenv("MSYSTEM", raising=False)
+    probed = []
+    monkeypatch.setattr(
+        ssh_client.subprocess, "run", lambda *a, **k: probed.append(1),
+    )
+    argv = ["cli.py", "srv", "upload-file", "a", "C:/Program Files/Git/home/x"]
+    assert ssh_client.unmangle_msys_argv(argv) == argv
+    assert probed == []
+
+
+def test_unmangle_noop_off_win32(monkeypatch):
+    monkeypatch.setattr(ssh_client.sys, "platform", "linux")
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    argv = ["cli.py", "srv", "run", "C:/Program Files/Git/home/x"]
+    assert ssh_client.unmangle_msys_argv(argv) == argv
+
+
+def test_unmangle_survives_missing_cygpath(monkeypatch):
+    monkeypatch.setattr(ssh_client.sys, "platform", "win32")
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+
+    def boom(*a, **k):
+        raise OSError("cygpath not found")
+
+    monkeypatch.setattr(ssh_client.subprocess, "run", boom)
+    argv = ["cli.py", "srv", "run", "C:/Program Files/Git/home/x"]
+    assert ssh_client.unmangle_msys_argv(argv) == argv
+
+
+def test_unmangle_survives_unrecognized_probe_output(monkeypatch):
+    monkeypatch.setattr(ssh_client.sys, "platform", "win32")
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    monkeypatch.setattr(
+        ssh_client.subprocess, "run", lambda *a, **k: _Probe("Z:\weird\path"),
+    )
+    argv = ["cli.py", "srv", "run", "C:/Program Files/Git/home/x"]
+    assert ssh_client.unmangle_msys_argv(argv) == argv

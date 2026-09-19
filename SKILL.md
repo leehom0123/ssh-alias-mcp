@@ -62,6 +62,7 @@ command text (e.g. `run "grep -s foo"`) are preserved.
 - **Docker build** — Add `--progress=plain` for real-time output. Never `| tail` (blocks until done)
 - **Shell** — Set `shell` in server YAML: `bash` / `cmd` / `powershell`
 - **Transfer reuse** — `upload_file`/`download_file` are the single-file primitives; `upload`/`upload-all` reuse the upload path, `download-script` reuses the download path (scripts differ only in the constrained `scripts_dir` path).
+- **Git-Bash paths** — remote POSIX paths pass through unchanged when invoked from Git-Bash; the CLI handles the MSYS argument rewrite itself (no `MSYS2_ARG_CONV_EXCL` workaround).
 
 ## More
 

@@ -11,7 +11,7 @@ from pathlib import Path
 import paramiko
 
 sys.path.insert(0, str(Path(__file__).parent))
-from ssh_client import pool, _normalize_path, load_yaml
+from ssh_client import pool, _normalize_path, load_yaml, unmangle_msys_argv
 
 HELP = """SSH Client CLI
 
@@ -296,6 +296,10 @@ def _dispatch(first: str, rest: list):
 
 
 def main():
+    # Git-Bash rewrites look-like-POSIX argv entries for native programs;
+    # strip the added MSYS root back off so remote paths stay POSIX.
+    sys.argv = unmangle_msys_argv(list(sys.argv))
+
     if len(sys.argv) < 2 or sys.argv[1] == "-h" or sys.argv[1] == "--help":
         print(HELP)
         sys.exit(0)

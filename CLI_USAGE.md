@@ -115,3 +115,4 @@ python cli.py my-server list-scripts -s
 
 - **sudo** — Use `run` with `sudo: true`, do not inline `sudo -S` in `run`
 - **Docker permissions** — If the user is not in the `docker` group, set `sudo: true` on the alias
+- **Git-Bash paths** — remote POSIX paths pass through unchanged when invoked from Git-Bash; the CLI handles the MSYS argument rewrite itself (no `MSYS2_ARG_CONV_EXCL` workaround).

@@ -25,6 +25,7 @@ import posixpath
 import re
 import shlex
 import socket
+import subprocess
 import sys
 import time
 import threading
@@ -172,8 +173,50 @@ def _normalize_path(raw: str) -> str:
                 rest = parts[3]
                 return f"{drive}:/{rest}"
         return s
-    
+
     return s
+
+
+def unmangle_msys_argv(argv: list) -> list:
+    """Undo Git-Bash MSYS2 argument path rewriting when invoked from it.
+
+    Git-Bash rewrites any look-like-POSIX argument before launching a
+    NATIVE Windows program: an upload-file remote path ``/home/bit/x``
+    arrives as ``<msys-root>/home/bit/x`` and is then sent literally to
+    the Linux peer, which fails with a bare ENOENT from SFTP. One
+    ``cygpath`` probe reproduces the exact rewrite; the added prefix is
+    stripped back off. Noop outside Git-Bash, so cmd/PowerShell/MCP
+    invocations and plain POSIX argv are untouched.
+    """
+    if len(argv) <= 1 or sys.platform != "win32" or not os.environ.get("MSYSTEM"):
+        return argv
+    probe = "/msys_argv_probe_zxk"
+    try:
+        out = subprocess.run(
+            ["cygpath", "-w", "-m", probe],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return argv
+    if out.returncode != 0:
+        return argv
+    converted = out.stdout.strip().replace("\\", "/")
+    # Keep the probe's leading slash so the stripped prefix has no trailing
+    # separator ("<msys-root>", not "<msys-root>/").
+    suffix = probe
+    if not converted.endswith(suffix):
+        return argv
+    prefix = converted[: -len(suffix)]
+    if not prefix:
+        return argv
+    fixed = [argv[0]]
+    for arg in argv[1:]:
+        if arg == prefix:
+            arg = "/"
+        elif arg.startswith(prefix + "/"):
+            arg = arg[len(prefix):]
+        fixed.append(arg)
+    return fixed
 
 
 def load_yaml(path: str) -> dict:
